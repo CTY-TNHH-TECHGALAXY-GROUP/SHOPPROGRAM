@@ -2239,6 +2239,17 @@
       });
     }
 
+    function getOrderProductQuantities(items) {
+      return (items || []).reduce(function (quantitiesByProduct, item) {
+        if (!item || !item.productId) {
+          return quantitiesByProduct;
+        }
+
+        quantitiesByProduct[item.productId] = (quantitiesByProduct[item.productId] || 0) + (Number(item.qty) || 0);
+        return quantitiesByProduct;
+      }, {});
+    }
+
     function holdOrder() {
       updateActiveOrder(function (order) {
         return Object.assign({}, order, { status: "held" });
@@ -2266,6 +2277,45 @@
         return;
       }
 
+      var requiredQtyByProduct = getOrderProductQuantities(activeOrder.items);
+      var insufficientProducts = Object.keys(requiredQtyByProduct).map(function (productId) {
+        var product = products.find(function (currentProduct) {
+          return currentProduct.id === productId;
+        });
+
+        if (!product) {
+          return {
+            productId: productId,
+            name: productId,
+            available: 0,
+            required: requiredQtyByProduct[productId]
+          };
+        }
+
+        var available = Math.max(0, Number(product.stock) || 0);
+        var required = Math.max(0, Number(requiredQtyByProduct[productId]) || 0);
+        if (available >= required) {
+          return null;
+        }
+
+        return {
+          productId: productId,
+          name: product.name,
+          available: available,
+          required: required
+        };
+      }).filter(Boolean);
+
+      if (insufficientProducts.length) {
+        window.alert(
+          L("Không đủ tồn kho để hoàn tất đơn này: / Not enough stock to complete this sale:\n") +
+          insufficientProducts.map(function (item) {
+            return "- " + item.name + " (" + item.available + "/" + item.required + ")";
+          }).join("\n")
+        );
+        return;
+      }
+
       var orderSnapshot = clone(activeOrder);
       var saleRecord = {
         id: uid("sale"),
@@ -2287,6 +2337,19 @@
 
       setSales(function (currentSales) {
         return [saleRecord].concat(currentSales);
+      });
+
+      setProducts(function (currentProducts) {
+        return currentProducts.map(function (product) {
+          var soldQty = Number(requiredQtyByProduct[product.id]) || 0;
+          if (!soldQty) {
+            return product;
+          }
+
+          return Object.assign({}, product, {
+            stock: Math.max(0, (Number(product.stock) || 0) - soldQty)
+          });
+        });
       });
 
       setOrders(function (currentOrders) {
