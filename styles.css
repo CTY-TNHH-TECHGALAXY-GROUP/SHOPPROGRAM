@@ -618,6 +618,12 @@ textarea:focus {
   color: var(--muted);
 }
 
+.field small {
+  font-size: 0.84rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
 .order-items,
 .list-stack {
   display: grid;
@@ -889,6 +895,11 @@ textarea:focus {
   display: grid;
   gap: 10px;
   width: min(100%, 320px);
+}
+
+.barcode-preview-size {
+  font-size: 0.92rem;
+  color: var(--muted);
 }
 
 .barcode-sample-card {

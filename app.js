@@ -264,6 +264,8 @@
       suffix: "01",
       width: 180,
       height: 72,
+      printWidthMm: 90,
+      printHeightMm: 55,
       title: "Tem bán lẻ / Retail Label",
       subtitle: "Dùng cho quầy / For counter sales",
       showName: true,
@@ -280,6 +282,8 @@
       suffix: "A",
       width: 220,
       height: 84,
+      printWidthMm: 100,
+      printHeightMm: 62,
       title: "Tem kệ hàng / Shelf Label",
       subtitle: "Dành cho trưng bày / For display",
       showName: true,
@@ -695,6 +699,79 @@
     return String(value || "").trim().toUpperCase();
   }
 
+  function getBarcodeDigits(value) {
+    return normalizeBarcode(value).replace(/\D+/g, "");
+  }
+
+  function getBarcodeCheckDigit(base12) {
+    var digits = String(base12 || "")
+      .replace(/\D+/g, "")
+      .slice(0, 12)
+      .split("")
+      .map(function (digit) {
+        return Number(digit) || 0;
+      });
+
+    if (digits.length !== 12) {
+      return 0;
+    }
+
+    var sum = digits.reduce(function (total, digit, index) {
+      return total + digit * (index % 2 === 0 ? 1 : 3);
+    }, 0);
+
+    return (10 - (sum % 10)) % 10;
+  }
+
+  function createEan13Barcode(seed) {
+    var safeSeed = normalizeBarcode(seed) || "FRUIT-HOUSE";
+    var hash = 0;
+    for (var index = 0; index < safeSeed.length; index += 1) {
+      hash = (hash * 31 + safeSeed.charCodeAt(index)) % 100000;
+    }
+
+    var base12 = "8938505" + padNumber(hash, 5);
+    return base12 + String(getBarcodeCheckDigit(base12));
+  }
+
+  function getScannableBarcode(value, seed) {
+    var normalizedValue = normalizeBarcode(value);
+    var digits = getBarcodeDigits(normalizedValue);
+
+    if (digits.length === 13 && digits === normalizedValue) {
+      return digits;
+    }
+
+    if (digits.length === 12 && digits === normalizedValue) {
+      return digits + String(getBarcodeCheckDigit(digits));
+    }
+
+    if (digits.length === 8 && digits === normalizedValue) {
+      return digits;
+    }
+
+    return createEan13Barcode(seed || normalizedValue);
+  }
+
+  function getBarcodeFormat(value) {
+    var normalizedValue = normalizeBarcode(value);
+    var digits = getBarcodeDigits(normalizedValue);
+
+    if (digits.length === 13 && digits === normalizedValue) {
+      return "EAN13";
+    }
+
+    if (digits.length === 8 && digits === normalizedValue) {
+      return "EAN8";
+    }
+
+    if (digits.length === 12 && digits === normalizedValue) {
+      return "UPC";
+    }
+
+    return "CODE128";
+  }
+
   function renderBarcodeMarkup(value, options) {
     var safeValue = normalizeBarcode(value);
     if (!safeValue || !window.JsBarcode) {
@@ -704,7 +781,7 @@
     try {
       var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
       window.JsBarcode(svg, safeValue, Object.assign({
-        format: "CODE128",
+        format: getBarcodeFormat(safeValue),
         displayValue: false,
         margin: 0,
         background: "transparent",
@@ -728,7 +805,7 @@
 
       try {
         window.JsBarcode(svgRef.current, normalizeBarcode(props.value), Object.assign({
-          format: "CODE128",
+          format: getBarcodeFormat(props.value),
           displayValue: false,
           margin: 0,
           background: "transparent",
@@ -974,7 +1051,12 @@
 
   function normalizeProduct(product) {
     var baseProduct = product || {};
+    var normalizedBarcode = getScannableBarcode(
+      baseProduct.barcode,
+      [baseProduct.id, baseProduct.name, baseProduct.category, baseProduct.barcode].join("|")
+    );
     return Object.assign({}, baseProduct, {
+      barcode: normalizedBarcode,
       componentIds: Array.isArray(baseProduct.componentIds) ? baseProduct.componentIds : []
     });
   }
@@ -985,6 +1067,13 @@
 
   function normalizeBarcodeTemplate(template, fallbackTemplate) {
     return Object.assign({}, fallbackTemplate || DEFAULT_BARCODE_TEMPLATES[0], template || {});
+  }
+
+  function getBarcodePrintSize(template) {
+    return {
+      widthMm: Math.max(35, Number(template && template.printWidthMm) || 90),
+      heightMm: Math.max(25, Number(template && template.printHeightMm) || 55)
+    };
   }
 
   function buildPrintMarkup(order, totals, settings, template, type, language, addOnOptions) {
@@ -1387,7 +1476,18 @@
       }
 
       return products.find(function (product) {
-        return normalizeBarcode(product.barcode) === safeCode;
+        var productBarcode = getScannableBarcode(
+          product.barcode,
+          [product.id, product.name, product.category, product.barcode].join("|")
+        );
+        var comparableValues = [
+          normalizeBarcode(productBarcode),
+          getBarcodeDigits(productBarcode),
+          normalizeBarcode(product.barcode),
+          getBarcodeDigits(product.barcode)
+        ].filter(Boolean);
+
+        return comparableValues.indexOf(safeCode) !== -1 || comparableValues.indexOf(getBarcodeDigits(safeCode)) !== -1;
       }) || null;
     }
 
@@ -1534,7 +1634,7 @@
         var newItem = {
           id: uid("item"),
           productId: product.id,
-          barcode: product.barcode || "",
+          barcode: getScannableBarcode(product.barcode, [product.id, product.name, product.category].join("|")),
           name: product.name,
           price: Number(product.price) || 0,
           qty: 1,
@@ -1752,9 +1852,10 @@
 
     function buildBarcodeLabelCardMarkup(product, template) {
       var categoryLabel = getProductCategoryLabel(product);
+      var printSize = getBarcodePrintSize(template);
       var barcodeSvg = renderBarcodeMarkup(product.barcode, {
-        width: 1.9,
-        height: Math.max(52, Math.round((Number(template.height) || 72) * 0.7)),
+        width: printSize.widthMm >= 90 ? 1.8 : 1.6,
+        height: Math.max(56, Math.round(printSize.heightMm * 2.2)),
         lineColor: "#1f1b18"
       });
 
@@ -1775,29 +1876,36 @@
     }
 
     function buildBarcodeLabelDocument(productsToPrint, template, quantities) {
-      var cards = (productsToPrint || []).map(function (product) {
+      var printSize = getBarcodePrintSize(template);
+      var pages = (productsToPrint || []).map(function (product) {
         var repeatCount = Math.max(1, Number(quantities[product.id]) || 1);
         return Array.from({ length: repeatCount }).map(function () {
-          return buildBarcodeLabelCardMarkup(product, template);
+          return "<section class='print-label-page'><div class='print-label-page-inner'>" + buildBarcodeLabelCardMarkup(product, template) + "</div></section>";
         }).join("");
       }).join("");
 
       return (
         "<!DOCTYPE html><html><head><meta charset='utf-8'><title>" + L("In tem mã vạch / Print Barcode Labels") + "</title>" +
         "<style>" +
-        "body{margin:0;padding:24px;font-family:Arial,sans-serif;background:#fff8ef;color:#2d2117}" +
-        ".print-label-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(" + Math.max(300, Number(template.width) || 180) + "px,1fr));gap:20px;align-items:start}" +
-        ".print-label-card{padding:28px 30px;background:linear-gradient(180deg,#fffdf9 0%,#fff4e7 100%);border:1px solid rgba(231,194,164,0.72);border-radius:28px;box-shadow:0 24px 56px rgba(123,82,28,0.10);break-inside:avoid;page-break-inside:avoid;min-height:" + Math.max(220, Number(template.height) * 3 || 240) + "px}" +
-        ".print-label-top{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}" +
-        ".print-label-brand{font-size:26px;line-height:1.05;color:#73685d}" +
-        ".print-label-name{margin-top:6px;font-size:30px;line-height:1.08;font-weight:700;color:#231a14}" +
-        ".print-label-price{font-size:32px;line-height:1.08;font-weight:700;color:#9e4518;white-space:nowrap}" +
-        ".print-label-barcode-wrap{margin-top:26px;padding:18px 18px 10px;background:#fff;display:flex;justify-content:center}" +
-        ".print-label-barcode-wrap svg{width:100%;height:auto;display:block}" +
-        ".print-label-code{margin-top:10px;text-align:center;font-size:22px;letter-spacing:.18em;color:#74695d}" +
-        ".print-label-category{margin-top:28px;font-size:22px;color:#74695d}" +
-        "@media print{body{padding:0}.print-label-grid{gap:12px}.print-label-card{box-shadow:none}}" +
-        "</style></head><body><div class='print-label-grid'>" + cards + "</div></body></html>"
+        ":root{color-scheme:light only;--label-accent:" + (template.accent || "#db5d17") + "}" +
+        "@page{size:" + printSize.widthMm + "mm " + printSize.heightMm + "mm;margin:0}" +
+        "html,body{margin:0;padding:0;background:#fff;color:#2d2117;font-family:'Be Vietnam Pro',Arial,sans-serif;-webkit-print-color-adjust:exact;print-color-adjust:exact}" +
+        "body{overflow:visible}" +
+        ".print-label-page{width:" + printSize.widthMm + "mm;height:" + printSize.heightMm + "mm;padding:2.5mm;box-sizing:border-box;page-break-after:always;break-after:page;background:#fff}" +
+        ".print-label-page:last-child{page-break-after:auto;break-after:auto}" +
+        ".print-label-page-inner{width:100%;height:100%}" +
+        ".print-label-card{width:100%;height:100%;padding:3.6mm 4mm;background:linear-gradient(180deg,#fffdf9 0%,#fff4e7 100%);border:0.35mm solid rgba(231,194,164,0.95);border-radius:4.5mm;display:flex;flex-direction:column;justify-content:flex-start;box-shadow:none;overflow:hidden}" +
+        ".print-label-top{display:flex;align-items:flex-start;justify-content:space-between;gap:3mm}" +
+        ".print-label-brand-block{min-width:0;flex:1 1 auto}" +
+        ".print-label-brand{font-size:3.4mm;line-height:1.1;color:#73685d;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
+        ".print-label-name{margin-top:1.2mm;font-size:5.3mm;line-height:1.08;font-weight:700;color:#231a14;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}" +
+        ".print-label-price{font-size:5.1mm;line-height:1.08;font-weight:700;color:var(--label-accent);white-space:nowrap;margin-left:2mm}" +
+        ".print-label-barcode-wrap{margin-top:3mm;padding:2.2mm 2.4mm 1.2mm;background:#fff;display:flex;justify-content:center;align-items:center;flex:1 1 auto;min-height:0}" +
+        ".print-label-barcode-wrap svg{width:100%;height:100%;max-height:100%;display:block}" +
+        ".print-label-code{margin-top:1.5mm;text-align:center;font-size:3.3mm;letter-spacing:.11em;color:#74695d;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
+        ".print-label-category{margin-top:2.3mm;font-size:3.15mm;color:#74695d;line-height:1.2}" +
+        "@media print{.print-label-page{margin:0}}" +
+        "</style></head><body>" + pages + "</body></html>"
       );
     }
 
@@ -1806,7 +1914,7 @@
         return;
       }
 
-      var popup = window.open("", "_blank", "width=520,height=420");
+      var popup = window.open("", "_blank", "width=760,height=560");
       if (!popup) {
         window.alert(L("Trình duyệt đang chặn cửa sổ xem trước tem. / Your browser blocked the label preview window."));
         return;
@@ -1827,7 +1935,7 @@
         return;
       }
 
-      var popup = window.open("", "_blank", "width=960,height=720");
+      var popup = window.open("", "_blank", "width=760,height=560");
       if (!popup) {
         window.alert(L("Trình duyệt đang chặn cửa sổ in tem. / Your browser blocked the label print window."));
         return;
@@ -2762,7 +2870,10 @@
                   category: productDraft.category,
                   price: Number(productDraft.price) || 0,
                   stock: Number(productDraft.stock) || 0,
-                  barcode: productDraft.barcode || product.barcode,
+                  barcode: getScannableBarcode(
+                    productDraft.barcode || product.barcode,
+                    [productDraft.id || product.id, productDraft.name, productDraft.category].join("|")
+                  ),
                   image: productDraft.image || "🍊",
                   description: productDraft.description,
                   componentIds: productDraft.componentIds || []
@@ -2792,7 +2903,10 @@
           category: productDraft.category,
           price: Number(productDraft.price) || 0,
           stock: Number(productDraft.stock) || 0,
-          barcode: productDraft.barcode || uid("TFH").toUpperCase(),
+          barcode: getScannableBarcode(
+            productDraft.barcode,
+            [productDraft.name, productDraft.category, productDraft.price, productDraft.stock, Date.now()].join("|")
+          ),
           image: productDraft.image || "🍊",
           description: productDraft.description,
           componentIds: productDraft.componentIds || []
@@ -2965,6 +3079,8 @@
         suffix: "X",
         width: 180,
         height: 72,
+        printWidthMm: 90,
+        printHeightMm: 55,
         title: "New Barcode Label",
         subtitle: "Custom barcode label",
         showName: true,
@@ -3702,6 +3818,7 @@
                     <label className="field">
                       <span>${L("Mã vạch / Barcode")}</span>
                       <input value=${productDraft.barcode} onInput=${function (event) { updateProductDraft("barcode", event.target.value); }} />
+                      <small>${L("Có thể để trống, hệ thống sẽ tự tạo mã số chuẩn dễ quét để in tem và scan trên desktop/mobile. / Leave blank to auto-generate a scannable numeric code for printing and scanning on desktop/mobile.")}</small>
                     </label>
                     <label className="field">
                       <span>${L("Biểu tượng / Icon")}</span>
@@ -4058,8 +4175,10 @@
                       <label className="field"><span>${L("Phụ đề / Subtitle")}</span><input value=${activeBarcodeTemplate.subtitle || ""} onInput=${function (event) { patchBarcodeTemplate(activeBarcodeTemplate.id, "subtitle", event.target.value); }} /></label>
                       <label className="field"><span>Prefix</span><input value=${activeBarcodeTemplate.prefix} onInput=${function (event) { patchBarcodeTemplate(activeBarcodeTemplate.id, "prefix", event.target.value); }} /></label>
                       <label className="field"><span>Suffix</span><input value=${activeBarcodeTemplate.suffix} onInput=${function (event) { patchBarcodeTemplate(activeBarcodeTemplate.id, "suffix", event.target.value); }} /></label>
-                      <label className="field"><span>Width</span><input type="number" value=${activeBarcodeTemplate.width} onInput=${function (event) { patchBarcodeTemplate(activeBarcodeTemplate.id, "width", Number(event.target.value) || 0); }} /></label>
-                      <label className="field"><span>Height</span><input type="number" value=${activeBarcodeTemplate.height} onInput=${function (event) { patchBarcodeTemplate(activeBarcodeTemplate.id, "height", Number(event.target.value) || 0); }} /></label>
+                      <label className="field"><span>${L("Chiều rộng preview / Preview Width")}</span><input type="number" value=${activeBarcodeTemplate.width} onInput=${function (event) { patchBarcodeTemplate(activeBarcodeTemplate.id, "width", Number(event.target.value) || 0); }} /></label>
+                      <label className="field"><span>${L("Chiều cao preview / Preview Height")}</span><input type="number" value=${activeBarcodeTemplate.height} onInput=${function (event) { patchBarcodeTemplate(activeBarcodeTemplate.id, "height", Number(event.target.value) || 0); }} /></label>
+                      <label className="field"><span>${L("Khổ in ngang (mm) / Print Width (mm)")}</span><input type="number" min="35" value=${activeBarcodeTemplate.printWidthMm || 90} onInput=${function (event) { patchBarcodeTemplate(activeBarcodeTemplate.id, "printWidthMm", Math.max(35, Number(event.target.value) || 0)); }} /></label>
+                      <label className="field"><span>${L("Khổ in dọc (mm) / Print Height (mm)")}</span><input type="number" min="25" value=${activeBarcodeTemplate.printHeightMm || 55} onInput=${function (event) { patchBarcodeTemplate(activeBarcodeTemplate.id, "printHeightMm", Math.max(25, Number(event.target.value) || 0)); }} /></label>
                     </div>
                     <div className="toggle-grid">
                       ${[
@@ -4111,6 +4230,7 @@
                         width: "100%",
                         minHeight: "auto"
                       }}>
+                        <small className="barcode-preview-size">${L("Khổ tem in / Print size")}: ${activeBarcodeTemplate.printWidthMm || 90}mm × ${activeBarcodeTemplate.printHeightMm || 55}mm</small>
                         <div className="barcode-sample-card">
                           <div className="barcode-sample-top">
                             <div>
