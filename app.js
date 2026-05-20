@@ -1610,6 +1610,12 @@
     }, [categories, selectedCategory]);
 
     useEffect(function () {
+      if (settingsSection === "product") {
+        setSettingsSection("general");
+      }
+    }, [settingsSection]);
+
+    useEffect(function () {
       if (productDraft.category && !categories.some(function (category) { return category.id === productDraft.category; })) {
         setProductDraft(function (currentDraft) {
           return Object.assign({}, currentDraft, {
@@ -4718,15 +4724,8 @@
     function renderSettingsView() {
       var settingsTabs = [
         { id: "general", label: "Chung / General" },
-        { id: "invoice", label: "Hóa đơn / Invoice" },
-        { id: "product", label: "Điều chỉnh sản phẩm / Product Adjustments" }
+        { id: "invoice", label: "Hóa đơn / Invoice" }
       ];
-      var totalStock = products.reduce(function (sum, product) {
-        return sum + (Number(product.stock) || 0);
-      }, 0);
-      var lowStockCount = products.filter(function (product) {
-        return Number(product.stock) <= 10;
-      }).length;
 
       return html`
         <section className="settings-layout">
