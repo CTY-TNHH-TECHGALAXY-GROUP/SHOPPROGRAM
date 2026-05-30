@@ -1668,41 +1668,39 @@
   }
 
   function LocalNumberInput(props) {
-    var useState = window.React.useState;
     var useEffect = window.React.useEffect;
     var useRef = window.React.useRef;
     
-    var localValState = useState(props.value);
-    var localVal = localValState[0];
-    var setLocalVal = localValState[1];
-    
+    var inputRef = useRef(null);
     var focused = useRef(false);
-    
+
     useEffect(function() {
-      if (!focused.current) {
-        setLocalVal(props.value);
+      if (inputRef.current && !focused.current) {
+        var strVal = props.value == null ? "" : String(props.value);
+        if (inputRef.current.value !== strVal) {
+          inputRef.current.value = strVal;
+        }
       }
     }, [props.value]);
 
     return html`
       <input
+        ref=${inputRef}
         type="number"
         min=${props.min}
         max=${props.max}
-        className=${props.className}
+        className=${props.className ? props.className + " no-spinners" : "no-spinners"}
         style=${props.style}
-        value=${localVal == null ? "" : localVal}
+        defaultValue=${props.value == null ? "" : props.value}
         onFocus=${function(e) {
           focused.current = true;
           if (props.onFocus) props.onFocus(e);
         }}
         onBlur=${function(e) {
           focused.current = false;
-          setLocalVal(props.value);
           if (props.onBlur) props.onBlur(e);
         }}
         onInput=${function(e) {
-          setLocalVal(e.target.value);
           if (props.onChange) {
             props.onChange(e.target.value === "" ? "" : Number(e.target.value));
           }
@@ -6254,20 +6252,13 @@
                                   <p>${category ? L(category.label) : product.category} · ${product.barcode}</p>
                                 </div>
                                 <div className="row-actions stock-editor">
-                                  <input
-                                    type="number"
+                                  <${LocalNumberInput}
                                     min="0"
                                     value=${product.stock}
-                                    onInput=${function (event) {
-                                      updateProductStock(product.id, event.target.value);
+                                    onChange=${function (val) {
+                                      updateProductStock(product.id, val);
                                     }}
                                     onBlur=${function () { flushPendingStockEdit(product.id); }}
-                                    onKeyDown=${function (event) {
-                                      if (event.key === "Enter") {
-                                        event.preventDefault();
-                                        event.target.blur();
-                                      }
-                                    }}
                                   />
                                   <button className="ghost-btn" onClick=${function () { startEditProduct(product); }}>${L("Sửa / Edit")}</button>
                                 </div>
@@ -7856,20 +7847,13 @@
                             <p>${category ? L(category.label) : product.category}</p>
                           </div>
                           <div className="row-actions stock-editor">
-                            <input
-                              type="number"
+                            <${LocalNumberInput}
                               min="0"
                               value=${product.stock}
-                              onInput=${function (event) {
-                                updateProductStock(product.id, event.target.value);
+                              onChange=${function (val) {
+                                updateProductStock(product.id, val);
                               }}
                               onBlur=${function () { flushPendingStockEdit(product.id); }}
-                              onKeyDown=${function (event) {
-                                if (event.key === "Enter") {
-                                  event.preventDefault();
-                                  event.target.blur();
-                                }
-                              }}
                             />
                             <button className="ghost-btn" onClick=${function () { startEditProduct(product); }}>${L("Sửa chi tiết / Edit Details")}</button>
                           </div>

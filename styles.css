@@ -1447,3 +1447,14 @@ textarea:focus {
     font-size: 1rem;
   }
 }
+ 
+ / *   H i d e   s p i n n e r s   f o r   c u s t o m   n u m b e r   i n p u t s   * /  
+ . n o - s p i n n e r s : : - w e b k i t - o u t e r - s p i n - b u t t o n ,  
+ . n o - s p i n n e r s : : - w e b k i t - i n n e r - s p i n - b u t t o n   {  
+     - w e b k i t - a p p e a r a n c e :   n o n e ;  
+     m a r g i n :   0 ;  
+ }  
+ . n o - s p i n n e r s   {  
+     - m o z - a p p e a r a n c e :   t e x t f i e l d ;  
+ }  
+ 
