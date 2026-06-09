@@ -3114,7 +3114,7 @@
         daySeries: daySeries,
         paymentBreakdown: paymentBreakdown,
         topProducts: topProducts,
-        recentSales: clone(salesInRange).sort(function (a, b) { return b.createdAt - a.createdAt; }).slice(0, 10)
+        recentSales: clone(salesInRange).sort(function (a, b) { return b.createdAt - a.createdAt; })
       };
     }, [products, sales, dashboardRange, dashboardCustomFrom, dashboardCustomTo]);
 
@@ -7062,7 +7062,7 @@
                   <h2 className="section-title">${L("SP bán chạy nhất / Top Products")}</h2>
                 </div>
               </div>
-              <div className="list-stack">
+              <div className="list-stack sales-history-scroll">
                 ${dashboardMetrics.topProducts.length
                   ? dashboardMetrics.topProducts.map(function (p, i) {
                       return html`
