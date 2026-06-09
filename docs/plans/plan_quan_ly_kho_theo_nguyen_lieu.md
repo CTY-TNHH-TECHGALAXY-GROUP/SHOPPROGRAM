@@ -25,7 +25,7 @@ Hệ thống sẽ chuyển sang quản lý kho theo **công thức/định mức
 ### 2. Frontend (React App)
 
 ---
-#### `app.js`
+#### `src/app.js`
 - **Tính toán Tồn kho Tự động (Dynamic/Virtual Stock)**:
   - Thêm hàm tính tồn kho ảo: Lặp qua `componentIds`, lấy (Tồn nguyên liệu / Định mức) -> Tính `Math.min` để ra số lượng ly tối đa có thể pha.
   - Cập nhật số lượng ảo này vào màn hình POS. Nút chọn món sẽ bị mờ đi (Out of stock) nếu số lượng ảo = 0 (tức là 1 trong các nguyên liệu đã hết).

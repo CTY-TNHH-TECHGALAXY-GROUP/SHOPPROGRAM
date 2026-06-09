@@ -1,9 +1,9 @@
 {
   "generated_at": "2026-06-08T09:18:15.358Z",
   "files": [
-    "supabase/schema.sql",
-    "supabase/seed.sql",
-    "supabase/seed.json"
+    "database/supabase/schema.sql",
+    "database/supabase/seed.sql",
+    "database/supabase/seed.json"
   ],
   "table_counts": {
     "categories": 12,

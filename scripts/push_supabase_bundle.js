@@ -2,8 +2,9 @@ const fs = require("fs");
 const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..");
-const SCHEMA_PATH = path.join(ROOT, "supabase", "schema.sql");
-const SEED_PATH = path.join(ROOT, "supabase", "seed.sql");
+const SUPABASE_DIR = path.join(ROOT, "database", "supabase");
+const SCHEMA_PATH = path.join(SUPABASE_DIR, "schema.sql");
+const SEED_PATH = path.join(SUPABASE_DIR, "seed.sql");
 
 const PROJECT_REF = process.env.SUPABASE_PROJECT_REF;
 const ACCESS_TOKEN = process.env.SUPABASE_ACCESS_TOKEN;

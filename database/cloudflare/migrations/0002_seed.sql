@@ -1,5 +1,5 @@
 -- ShopFlow POS - Seed data
--- Mirrors DEFAULT_PRODUCTS/CATEGORIES/ADD_ONS/COMPONENTS in app.js so a fresh
+-- Mirrors DEFAULT_PRODUCTS/CATEGORIES/ADD_ONS/COMPONENTS in src/app.js so a fresh
 -- D1 database starts with the same content the offline app ships with.
 -- Safe to re-run: uses INSERT OR IGNORE.
 

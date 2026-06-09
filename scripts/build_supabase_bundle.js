@@ -2,7 +2,8 @@ const fs = require("fs");
 const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..");
-const OUT_DIR = path.join(ROOT, "supabase");
+const DATA_DIR = path.join(ROOT, "database", "data");
+const OUT_DIR = path.join(ROOT, "database", "supabase");
 const NOW = Date.now();
 
 const CATEGORY_ROWS = [
@@ -338,7 +339,7 @@ create table if not exists doc_sequences (
 `;
 
 function readProducts() {
-  const source = JSON.parse(fs.readFileSync(path.join(ROOT, "db_dump.json"), "utf8"));
+  const source = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "db_dump.json"), "utf8"));
   const rows = (((source || [])[0] || {}).results) || [];
   return rows
     .filter((row) => row && !DUPLICATE_PRODUCT_IDS.has(row.id))
@@ -387,7 +388,7 @@ function buildSeedData() {
       generated_at: new Date(NOW).toISOString(),
       source: "Cloudflare D1 preparation bundle for Vercel + Supabase",
       notes: [
-        "Products are sourced from db_dump.json.",
+        "Products are sourced from database/data/db_dump.json.",
         "Inventory is initialized to 0 because live cross-device stock snapshots are not stored in this repo dump.",
         "Templates and shop settings are included so a fresh Supabase environment starts with the same UI defaults."
       ]
@@ -486,9 +487,9 @@ function main() {
   const manifest = {
     generated_at: seed.meta.generated_at,
     files: [
-      "supabase/schema.sql",
-      "supabase/seed.sql",
-      "supabase/seed.json"
+      "database/supabase/schema.sql",
+      "database/supabase/seed.sql",
+      "database/supabase/seed.json"
     ],
     table_counts: Object.fromEntries(
       Object.entries(seed.tables).map(([key, value]) => [key, Array.isArray(value) ? value.length : 0])

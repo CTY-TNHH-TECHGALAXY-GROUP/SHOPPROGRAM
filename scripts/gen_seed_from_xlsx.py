@@ -1,6 +1,6 @@
 """
-Generates migrations/0004_oria_master.sql from
-SHOPHOUSE_GIA_MENU_FOR_WEB_with_unit.xlsx.
+Generates database/cloudflare/migrations/0004_oria_master.sql from
+database/data/SHOPHOUSE_GIA_MENU_FOR_WEB_with_unit.xlsx.
 
 The xlsx is organized as section-headers + product rows:
     A=ORIA61000   B="1. ĐỒ ĂN NHANH..."         (section header, level-2 category)
@@ -19,8 +19,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-XLSX_DUMP = ROOT / "xlsx_dump.json"
-OUT_SQL = ROOT / "migrations" / "0004_oria_master.sql"
+DATA_DIR = ROOT / "database" / "data"
+XLSX_DUMP = DATA_DIR / "xlsx_dump.json"
+OUT_SQL = ROOT / "database" / "cloudflare" / "migrations" / "0004_oria_master.sql"
 
 # Hand-coded full category list (from the user-provided table).
 # id    = stable slug used everywhere in the app

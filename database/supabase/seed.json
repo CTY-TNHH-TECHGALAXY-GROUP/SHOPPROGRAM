@@ -4,7 +4,7 @@
     "generated_at": "2026-06-08T09:18:15.358Z",
     "source": "Cloudflare D1 preparation bundle for Vercel + Supabase",
     "notes": [
-      "Products are sourced from db_dump.json.",
+      "Products are sourced from database/data/db_dump.json.",
       "Inventory is initialized to 0 because live cross-device stock snapshots are not stored in this repo dump.",
       "Templates and shop settings are included so a fresh Supabase environment starts with the same UI defaults."
     ]

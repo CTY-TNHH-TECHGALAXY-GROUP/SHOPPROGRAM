@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..");
+const SUPABASE_DIR = path.join(ROOT, "database", "supabase");
 const PROJECT_REF = process.env.SUPABASE_PROJECT_REF;
 const ACCESS_TOKEN = process.env.SUPABASE_ACCESS_TOKEN;
 const CLOUDFLARE_BASE = process.env.CLOUDFLARE_POS_BASE_URL || "https://shopprogram.pages.dev";
@@ -152,7 +153,7 @@ function buildSettingsRows(settingsObject) {
 }
 
 function defaultComponents() {
-  const seed = JSON.parse(fs.readFileSync(path.join(ROOT, "supabase", "seed.json"), "utf8"));
+  const seed = JSON.parse(fs.readFileSync(path.join(SUPABASE_DIR, "seed.json"), "utf8"));
   return seed.tables.components || [];
 }
 
@@ -411,7 +412,7 @@ async function main() {
   const statements = buildStatements(tables);
   await runBatch("cloudflare -> supabase copy", statements);
 
-  const outPath = path.join(ROOT, "supabase", "cloudflare-live-export.json");
+  const outPath = path.join(SUPABASE_DIR, "cloudflare-live-export.json");
   fs.writeFileSync(outPath, JSON.stringify({
     exported_at: new Date().toISOString(),
     source: CLOUDFLARE_BASE,

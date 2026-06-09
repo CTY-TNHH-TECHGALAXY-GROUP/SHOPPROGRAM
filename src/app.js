@@ -104,7 +104,7 @@
   }
 
   var FILTER_ALL_CATEGORY = { id: "all", label: "Tất cả / All", icon: "🛒" };
-  // Master category list — matches migrations/0004_oria_master.sql.
+  // Master category list — matches database/cloudflare/migrations/0004_oria_master.sql.
   // Source of truth is Cloudflare D1; this default only seeds first-time
   // localStorage so the app is usable before the initial /api/sync/pull lands.
   var DEFAULT_CATEGORY_OPTIONS = [
@@ -5179,7 +5179,7 @@
     // Returns null if the category doesn't have a known ORIA prefix (e.g.
     // user added a custom category).
     function suggestOriaIdForCategory(categoryId) {
-      // Map app slug -> ORIA 2-digit code (matches migrations/0004_oria_master.sql)
+      // Map app slug -> ORIA 2-digit code (matches database/cloudflare/migrations/0004_oria_master.sql)
       var CAT_TO_CODE = {
         fruits: "10", smoothies: "20", juices: "30",
         "nutritious-drinks": "40", "refreshing-drinks": "50",

@@ -24,7 +24,7 @@ import urllib.error
 import uuid
 
 BASE = "https://shopprogram.pages.dev"
-VAT_RATE = 0.08  # matches VAT_RATE in app.js
+VAT_RATE = 0.08  # matches VAT_RATE in src/app.js
 
 
 def http(method, path, body=None):

@@ -3,12 +3,11 @@
 .wrangler/
 node_modules/
 
-# Migration/export tooling should stay in GitHub only, not public Pages assets.
+# Keep private tooling/data out of Vercel static deploys.
 scripts/
 database/
 docs/
 
-# Local data exports and setup docs.
 *.xlsx
 *.numbers
 db_counts.json
@@ -16,6 +15,5 @@ db_dump.json
 xlsx_dump.json
 xlsx_rows.txt
 README.md
-vercel.json
 wrangler.toml
 .env*

@@ -6,8 +6,8 @@ pages_build_output_dir = "."
 # Run once to create the database:
 #   npx wrangler d1 create shopflow-db
 # Then paste the printed database_id below and run:
-#   npx wrangler d1 execute shopflow-db --file=./migrations/0001_init.sql --remote
-#   npx wrangler d1 execute shopflow-db --file=./migrations/0002_seed.sql --remote
+#   npx wrangler d1 execute shopflow-db --file=./database/cloudflare/migrations/0001_init.sql --remote
+#   npx wrangler d1 execute shopflow-db --file=./database/cloudflare/migrations/0002_seed.sql --remote
 [[d1_databases]]
 binding       = "DB"
 database_name = "shopflow-db"

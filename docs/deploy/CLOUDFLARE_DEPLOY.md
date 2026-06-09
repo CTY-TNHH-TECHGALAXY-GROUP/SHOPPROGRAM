@@ -2,7 +2,7 @@
 
 Ứng dụng giờ gồm 2 phần:
 
-1. **Static frontend** ở thư mục gốc (`index.html`, `app.js`, `styles.css`, `sync.js`).
+1. **Static frontend** ở `index.html` và `src/` (`src/app.js`, `src/styles.css`, `src/sync.js`).
 2. **Pages Functions API** trong `functions/api/*` đọc/ghi vào **Cloudflare D1**.
 
 Kiến trúc:
@@ -41,10 +41,10 @@ Copy `database_id` đó dán vào `wrangler.toml` (thay chuỗi `REPLACE_WITH_DA
 
 ```bash
 # Tạo bảng
-npx wrangler d1 execute shopflow-db --remote --file=./migrations/0001_init.sql
+npx wrangler d1 execute shopflow-db --remote --file=./database/cloudflare/migrations/0001_init.sql
 
-# Nạp dữ liệu mẫu (giống DEFAULT_PRODUCTS trong app.js)
-npx wrangler d1 execute shopflow-db --remote --file=./migrations/0002_seed.sql
+# Nạp dữ liệu mẫu (giống DEFAULT_PRODUCTS trong src/app.js)
+npx wrangler d1 execute shopflow-db --remote --file=./database/cloudflare/migrations/0002_seed.sql
 ```
 
 Bỏ `--remote` nếu muốn dùng D1 local trong khi dev với `wrangler pages dev`.
@@ -93,8 +93,8 @@ npx wrangler pages dev . --d1=DB=shopflow-db
 Mở http://localhost:8788. D1 dev sẽ là một file SQLite cục bộ; chạy lại migration với:
 
 ```bash
-npx wrangler d1 execute shopflow-db --local --file=./migrations/0001_init.sql
-npx wrangler d1 execute shopflow-db --local --file=./migrations/0002_seed.sql
+npx wrangler d1 execute shopflow-db --local --file=./database/cloudflare/migrations/0001_init.sql
+npx wrangler d1 execute shopflow-db --local --file=./database/cloudflare/migrations/0002_seed.sql
 ```
 
 ## 7. Sao lưu / khôi phục D1

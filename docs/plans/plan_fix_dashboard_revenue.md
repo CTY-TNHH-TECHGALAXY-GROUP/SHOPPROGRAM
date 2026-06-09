@@ -2,8 +2,8 @@
 
 ## 1. Phân tích nguyên nhân gốc rễ (Root Cause)
 Hiện tại, khi xem tab "Báo cáo", hai máy (Máy E và Máy Y) hiển thị hai số liệu khác nhau (80k và 57k) vì:
-- Báo cáo trên ứng dụng POS (`app.js`) đang được **tính toán hoàn toàn dựa trên dữ liệu lưu ở LocalStorage** của từng máy (biến `sales`).
-- Khi Máy E tạo đơn, đơn đó được lưu vào LocalStorage của Máy E và đẩy lên Server (qua `sync.js`). Tuy nhiên, cơ chế đồng bộ hiện tại **không kéo ngược (pull)** toàn bộ danh sách hóa đơn và chi tiết món (`sale_items`) từ Server về lại các máy khác.
+- Báo cáo trên ứng dụng POS (`src/app.js`) đang được **tính toán hoàn toàn dựa trên dữ liệu lưu ở LocalStorage** của từng máy (biến `sales`).
+- Khi Máy E tạo đơn, đơn đó được lưu vào LocalStorage của Máy E và đẩy lên Server (qua `src/sync.js`). Tuy nhiên, cơ chế đồng bộ hiện tại **không kéo ngược (pull)** toàn bộ danh sách hóa đơn và chi tiết món (`sale_items`) từ Server về lại các máy khác.
 - Kết quả: Máy nào tạo bill thì máy đó mới lưu bill đó ở LocalStorage, dẫn đến báo cáo doanh thu mạnh máy nào máy nấy tính.
 
 ## 2. Giải pháp đề xuất
@@ -18,7 +18,7 @@ Tạo một Cloudflare Worker mới tại `functions/api/reports/dashboard.js`:
   - Top sản phẩm bán chạy (`topProducts`) bằng cách JOIN bảng `sales` và `sale_items`.
   - Lịch sử giao dịch gần đây (`recentSales`).
 
-### Bước 2.2: Cập nhật giao diện Báo Cáo (`app.js`)
+### Bước 2.2: Cập nhật giao diện Báo Cáo (`src/app.js`)
 - Đổi biến `dashboardMetrics` từ `useMemo` (tính toán local) sang dạng `useState` + `useEffect` để `fetch` dữ liệu từ API `/api/reports/dashboard`.
 - **Xử lý Offline/Online:**
   - Nếu có mạng (Online): Giao diện sẽ hiển thị dữ liệu chuẩn từ Server (gộp chung tất cả các máy).
