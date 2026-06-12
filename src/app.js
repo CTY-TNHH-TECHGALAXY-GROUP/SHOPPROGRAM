@@ -4399,7 +4399,7 @@
           }
           return remaining;
         });
-        pushToast("success", L("Đã lưu hóa đơn vào Supabase. / Sale saved to Supabase."));
+        pushToast("success", L("Đã lưu hóa đơn / Sale saved"));
       }).catch(function (error) {
         var message = error && error.data && error.data.error
           ? error.data.error
