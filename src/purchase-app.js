@@ -353,8 +353,9 @@
       var card = document.createElement("article");
       card.className = "request-item";
       card.innerHTML = '<div class="request-item-main"><strong></strong><small></small></div>';
-      card.querySelector("strong").textContent = request.id + " · " + itemCount + " dòng";
+      card.querySelector("strong").textContent = (request.requestTitle || request.id) + " · " + itemCount + " dòng";
       card.querySelector("small").textContent = [
+        request.requestTitle ? "Mã: " + request.id : "",
         request.requesterName ? "NV kho: " + request.requesterName : "NV kho",
         "SL yêu cầu " + formatter.format(qty),
         request.note || "",
@@ -413,6 +414,7 @@
 
   function buildRequestPayload() {
     return {
+      requestTitle: $("requestTitle").value.trim(),
       requesterName: $("requesterName").value.trim(),
       note: $("requestNote").value.trim(),
       items: state.requestLines.map(function (line) {
@@ -442,6 +444,7 @@
     api("/purchase-requests", { method: "POST", body: payload })
       .then(function (data) {
         setMessage("requestMessage", "Đã lưu yêu cầu " + (data.id || "") + ".", "success");
+        $("requestTitle").value = "";
         $("requestNote").value = "";
         state.requestLines = [];
         return loadRequests();

@@ -4,6 +4,7 @@ async function ensurePurchaseRequestTables(db) {
   await db.prepare(
     `CREATE TABLE IF NOT EXISTS purchase_requests (
       id              TEXT PRIMARY KEY,
+      request_title   TEXT,
       requester_name  TEXT,
       note            TEXT,
       items_json      TEXT NOT NULL,
@@ -15,11 +16,25 @@ async function ensurePurchaseRequestTables(db) {
       updated_at      BIGINT NOT NULL
     )`
   ).run();
+  await ensurePurchaseRequestColumns(db);
   await ensureTimestampColumns(db);
   await db.prepare(
     `CREATE INDEX IF NOT EXISTS idx_purchase_requests_status
      ON purchase_requests(status, created_at)`
   ).run();
+}
+
+async function columnExists(db, tableName, columnName) {
+  const { results } = await db.prepare(`PRAGMA table_info(${tableName})`).all();
+  return (results || []).some((column) => column.name === columnName);
+}
+
+async function ensurePurchaseRequestColumns(db) {
+  if (!(await columnExists(db, "purchase_requests", "request_title"))) {
+    await db.prepare(
+      `ALTER TABLE purchase_requests ADD COLUMN request_title TEXT`
+    ).run();
+  }
 }
 
 async function ensureTimestampColumns(db) {
@@ -70,6 +85,7 @@ function parseRequest(row) {
   }
   return {
     id: row.id,
+    requestTitle: row.request_title || "",
     requesterName: row.requester_name || "",
     note: row.note || "",
     status: row.status || "open",
@@ -89,7 +105,7 @@ export const onRequestGet = async ({ env, request }) => {
   const limit = Math.min(Number(url.searchParams.get("limit")) || 60, 200);
   const where = status === "all" ? "" : "WHERE status = ?";
   const stmt = env.DB.prepare(
-    `SELECT id, requester_name, note, items_json, status, fulfilled_by,
+    `SELECT id, request_title, requester_name, note, items_json, status, fulfilled_by,
             fulfilled_at, purchase_id, created_at, updated_at
      FROM purchase_requests
      ${where}
@@ -131,9 +147,10 @@ export const onRequestPost = async ({ env, request }) => {
   const id = body.id || uid("req");
   await env.DB.prepare(
     `INSERT INTO purchase_requests
-       (id, requester_name, note, items_json, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'open', ?, ?)
+       (id, request_title, requester_name, note, items_json, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'open', ?, ?)
      ON CONFLICT(id) DO UPDATE SET
+       request_title = excluded.request_title,
        requester_name = excluded.requester_name,
        note = excluded.note,
        items_json = excluded.items_json,
@@ -141,6 +158,7 @@ export const onRequestPost = async ({ env, request }) => {
        updated_at = excluded.updated_at`
   ).bind(
     id,
+    String(body.requestTitle || body.request_title || "").trim() || null,
     String(body.requesterName || body.requester_name || "").trim() || null,
     String(body.note || "").trim() || null,
     JSON.stringify(items),
