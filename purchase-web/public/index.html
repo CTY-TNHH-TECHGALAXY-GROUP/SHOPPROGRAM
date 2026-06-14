@@ -10,7 +10,7 @@
       href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="https://shopprogram.pages.dev/src/purchase-styles.css?v=2" />
+    <link rel="stylesheet" href="https://shopprogram.pages.dev/src/purchase-styles.css?v=3" />
   </head>
   <body>
     <main class="purchase-shell">
@@ -18,7 +18,7 @@
         <div>
           <p class="eyebrow">OriaFarm Inventory</p>
           <h1>Phiếu nhập hàng</h1>
-          <p class="topbar-note">Web riêng cho yêu cầu mua hàng và nhập kho. Dữ liệu tự lưu về POS chính.</p>
+          <p class="topbar-note">Web riêng cho yêu cầu hàng và nhập kho theo đúng list đã được yêu cầu.</p>
         </div>
         <div class="topbar-actions">
           <span id="syncStatus" class="status-pill">Đang tải...</span>
@@ -26,124 +26,141 @@
         </div>
       </header>
 
-      <section class="request-board">
-        <article class="panel request-card">
-          <div class="section-heading">
-            <p class="eyebrow">Nhân viên kho</p>
-            <h2>Tạo yêu cầu mua hàng</h2>
-          </div>
-          <p class="soft-note">Thêm hàng ở phần phiếu bên dưới, nhập số lượng cần mua, rồi lưu thành yêu cầu để người mua hàng thấy.</p>
-          <div class="field-grid">
-            <label>
-              Người yêu cầu
-              <input id="requesterName" type="text" placeholder="Tên nhân viên kho" />
-            </label>
-            <label>
-              Ghi chú yêu cầu
-              <input id="requestNote" type="text" placeholder="Ví dụ: cần trước 10h sáng" />
-            </label>
-          </div>
-          <button id="createRequestBtn" class="secondary-button" type="button">Lưu thành yêu cầu</button>
-          <p id="requestMessage" class="save-message" role="status"></p>
-        </article>
+      <nav class="workflow-tabs" aria-label="Luồng phiếu nhập hàng">
+        <button class="workflow-tab is-active" type="button" data-workflow="request">1. Tạo yêu cầu hàng</button>
+        <button class="workflow-tab" type="button" data-workflow="receive">2. Nhập hàng theo yêu cầu</button>
+      </nav>
 
-        <article class="panel request-card">
-          <div class="request-list-head">
+      <section class="workflow-panel request-workflow" data-panel="request">
+        <div class="purchase-layout">
+          <form class="panel purchase-form">
             <div class="section-heading">
-              <p class="eyebrow">Người mua hàng / nhập kho</p>
-              <h2>Yêu cầu đang mở</h2>
+              <p class="eyebrow">Nhân viên kho</p>
+              <h2>Tạo yêu cầu mua hàng</h2>
             </div>
-            <button id="refreshRequestsBtn" class="ghost-button" type="button">Tải lại</button>
-          </div>
-          <div id="requestList" class="request-list empty">Chưa có yêu cầu đang mở.</div>
-        </article>
+            <p class="soft-note">Tìm sản phẩm hoặc thành phần, nhập số lượng cần mua, rồi lưu thành yêu cầu.</p>
+
+            <div class="field-grid">
+              <label>
+                Người yêu cầu
+                <input id="requesterName" type="text" placeholder="Tên nhân viên kho" />
+              </label>
+              <label>
+                Ghi chú yêu cầu
+                <input id="requestNote" type="text" placeholder="Ví dụ: cần trước 10h sáng" />
+              </label>
+            </div>
+
+            <div class="type-tabs" role="tablist" aria-label="Loại hàng yêu cầu">
+              <button class="type-tab is-active" type="button" data-type="product">Hàng bán lẻ</button>
+              <button class="type-tab" type="button" data-type="component">Thành phần</button>
+            </div>
+
+            <label>
+              Tìm theo tên, mã vạch, SKU
+              <input id="itemSearch" type="search" placeholder="Gõ tên hàng hoặc quét barcode..." autocomplete="off" />
+            </label>
+
+            <div id="itemResults" class="item-results" aria-live="polite"></div>
+          </form>
+
+          <aside class="panel receipt-panel">
+            <div class="receipt-header">
+              <div>
+                <p class="eyebrow">List yêu cầu</p>
+                <h2>Hàng cần mua</h2>
+              </div>
+              <button id="clearRequestBtn" class="ghost-button" type="button">Xóa nháp</button>
+            </div>
+
+            <div id="requestDraftLines" class="draft-lines empty">Tìm hàng ở bên trái để tạo list yêu cầu mua hàng.</div>
+
+            <div class="totals-card">
+              <div><span>Số dòng</span><strong id="requestLineCount">0</strong></div>
+              <div><span>Tổng số lượng yêu cầu</span><strong id="requestQtyTotal">0</strong></div>
+            </div>
+
+            <button id="createRequestBtn" class="primary-button" type="button">Lưu thành yêu cầu</button>
+            <p id="requestMessage" class="save-message" role="status"></p>
+          </aside>
+        </div>
       </section>
 
-      <section class="purchase-layout">
-        <form id="purchaseForm" class="panel purchase-form">
-          <div class="section-heading">
-            <p class="eyebrow">Thông tin phiếu</p>
-            <h2>Nhà cung cấp & thanh toán</h2>
-          </div>
+      <section class="workflow-panel receive-workflow is-hidden" data-panel="receive">
+        <div class="purchase-layout">
+          <form id="purchaseForm" class="panel purchase-form">
+            <div class="request-list-head">
+              <div class="section-heading">
+                <p class="eyebrow">Người mua hàng / nhập kho</p>
+                <h2>Danh sách đang được yêu cầu</h2>
+              </div>
+              <button id="refreshRequestsBtn" class="ghost-button" type="button">Tải lại</button>
+            </div>
+            <p class="soft-note">Các yêu cầu đang mở được gom theo từng sản phẩm/thành phần. Người mua hàng chỉ nhập số lượng nhận thực tế và giá nhập.</p>
+            <div id="requestSummaryList" class="request-list empty">Chưa có yêu cầu đang mở.</div>
 
-          <div id="selectedRequestBox" class="selected-request is-hidden"></div>
+            <div class="divider"></div>
 
-          <label>
-            Nhà cung cấp
-            <select id="supplierSelect">
-              <option value="">Chọn nhà cung cấp hoặc nhập mới</option>
-            </select>
-          </label>
+            <div class="section-heading">
+              <p class="eyebrow">Thông tin nhập kho</p>
+              <h2>Nhà cung cấp & thanh toán</h2>
+            </div>
 
-          <label>
-            Tên nhà cung cấp mới
-            <input id="supplierName" type="text" placeholder="Ví dụ: Chợ đầu mối, Oria supplier..." />
-          </label>
-
-          <div class="field-grid">
             <label>
-              Thanh toán
-              <select id="paymentMethod" required>
-                <option value="">Chọn</option>
-                <option value="cash">Tiền mặt</option>
-                <option value="bank_transfer">Chuyển khoản</option>
-                <option value="card">Thẻ</option>
-                <option value="e_wallet">Ví điện tử</option>
+              Nhà cung cấp
+              <select id="supplierSelect">
+                <option value="">Chọn nhà cung cấp hoặc nhập mới</option>
               </select>
             </label>
+
             <label>
-              Đã thanh toán
-              <input id="paidAmount" type="number" min="0" step="1000" placeholder="Tự bằng tổng tiền" />
+              Tên nhà cung cấp mới
+              <input id="supplierName" type="text" placeholder="Ví dụ: Chợ đầu mối, Oria supplier..." />
             </label>
-          </div>
 
-          <label>
-            Ghi chú
-            <textarea id="purchaseNote" rows="3" placeholder="Ghi chú lô hàng, người giao, số hóa đơn..."></textarea>
-          </label>
-
-          <div class="divider"></div>
-
-          <div class="section-heading compact">
-            <p class="eyebrow">Tìm & thêm</p>
-            <h2>Chọn hàng nhập</h2>
-          </div>
-
-          <div class="type-tabs" role="tablist" aria-label="Loại hàng nhập">
-            <button class="type-tab is-active" type="button" data-type="product">Hàng bán lẻ</button>
-            <button class="type-tab" type="button" data-type="component">Thành phần</button>
-          </div>
-
-          <label>
-            Tìm theo tên, mã vạch, SKU
-            <input id="itemSearch" type="search" placeholder="Gõ tên hàng hoặc quét barcode..." autocomplete="off" />
-          </label>
-
-          <div id="itemResults" class="item-results" aria-live="polite"></div>
-        </form>
-
-        <aside class="panel receipt-panel">
-          <div class="receipt-header">
-            <div>
-              <p class="eyebrow">Phiếu đang nhập</p>
-              <h2 id="draftTitle">Chưa có dòng hàng</h2>
+            <div class="field-grid">
+              <label>
+                Thanh toán
+                <select id="paymentMethod" required>
+                  <option value="">Chọn</option>
+                  <option value="cash">Tiền mặt</option>
+                  <option value="bank_transfer">Chuyển khoản</option>
+                  <option value="card">Thẻ</option>
+                  <option value="e_wallet">Ví điện tử</option>
+                </select>
+              </label>
+              <label>
+                Đã thanh toán
+                <input id="paidAmount" type="number" min="0" step="1000" placeholder="Tự bằng tổng tiền" />
+              </label>
             </div>
-            <button id="clearDraftBtn" class="ghost-button" type="button">Xóa nháp</button>
-          </div>
 
-          <div id="draftLines" class="draft-lines empty">
-            Chọn hàng ở bên trái để tạo phiếu nhập.
-          </div>
+            <label>
+              Ghi chú phiếu nhập
+              <textarea id="purchaseNote" rows="3" placeholder="Ghi chú lô hàng, người giao, số hóa đơn..."></textarea>
+            </label>
+          </form>
 
-          <div class="totals-card">
-            <div><span>Số dòng</span><strong id="lineCount">0</strong></div>
-            <div><span>Tổng số lượng</span><strong id="qtyTotal">0</strong></div>
-            <div class="grand-total"><span>Tổng tiền</span><strong id="amountTotal">0 đ</strong></div>
-          </div>
+          <aside class="panel receipt-panel">
+            <div class="receipt-header">
+              <div>
+                <p class="eyebrow">Phiếu nhập</p>
+                <h2>Nhập SL và giá</h2>
+              </div>
+            </div>
 
-          <button id="savePurchaseBtn" class="primary-button" type="button">Lưu phiếu nhập</button>
-          <p id="saveMessage" class="save-message" role="status"></p>
-        </aside>
+            <div id="receiveLines" class="draft-lines empty">Chưa có sản phẩm nào đang được yêu cầu.</div>
+
+            <div class="totals-card">
+              <div><span>Số dòng</span><strong id="lineCount">0</strong></div>
+              <div><span>Tổng số lượng nhận</span><strong id="qtyTotal">0</strong></div>
+              <div class="grand-total"><span>Tổng tiền nhập</span><strong id="amountTotal">0 đ</strong></div>
+            </div>
+
+            <button id="savePurchaseBtn" class="primary-button" type="button">Lưu phiếu nhập</button>
+            <p id="saveMessage" class="save-message" role="status"></p>
+          </aside>
+        </div>
       </section>
     </main>
 
@@ -180,6 +197,6 @@
     <script>
       window.SHOPFLOW_API_BASE = "https://shopprogram.pages.dev/api";
     </script>
-    <script src="https://shopprogram.pages.dev/src/purchase-app.js?v=2"></script>
+    <script src="https://shopprogram.pages.dev/src/purchase-app.js?v=3"></script>
   </body>
 </html>

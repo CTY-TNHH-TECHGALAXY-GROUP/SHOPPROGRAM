@@ -181,12 +181,46 @@ label {
   padding: 14px 18px;
 }
 
+.workflow-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: var(--shadow);
+}
+
+.workflow-tab {
+  min-height: 58px;
+  border: 1px solid transparent;
+  border-radius: 18px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 900;
+}
+
+.workflow-tab.is-active {
+  border-color: rgba(222, 99, 29, 0.28);
+  background: linear-gradient(135deg, #ffe0b9, #ffc47f);
+  color: var(--text);
+}
+
+.workflow-panel {
+  margin-top: 18px;
+}
+
+.workflow-panel.is-hidden {
+  display: none;
+}
+
 .purchase-layout {
   display: grid;
   grid-template-columns: minmax(0, 0.95fr) minmax(420px, 0.75fr);
   gap: 18px;
   align-items: start;
-  margin-top: 18px;
 }
 
 .request-board {
@@ -230,7 +264,7 @@ label {
 .request-list {
   display: grid;
   gap: 10px;
-  max-height: 260px;
+  max-height: 320px;
   overflow-y: auto;
 }
 
@@ -546,6 +580,7 @@ label {
   }
 
   .topbar-actions,
+  .workflow-tabs,
   .field-grid,
   .type-tabs {
     grid-template-columns: 1fr;

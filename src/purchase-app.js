@@ -1,13 +1,14 @@
 (function () {
   var state = {
+    activeTab: "request",
     products: [],
     components: [],
     suppliers: [],
     requests: [],
-    selectedRequest: null,
+    requestLines: [],
+    receiveLines: [],
     itemType: "product",
     search: "",
-    lines: [],
     saving: false,
   };
 
@@ -50,19 +51,14 @@
 
   function setStatus(text, mode) {
     var el = $("syncStatus");
+    if (!el) return;
     el.textContent = text;
     el.classList.toggle("is-error", mode === "error");
   }
 
-  function setMessage(text, mode) {
-    var el = $("saveMessage");
-    el.textContent = text || "";
-    el.classList.toggle("is-success", mode === "success");
-    el.classList.toggle("is-error", mode === "error");
-  }
-
-  function setRequestMessage(text, mode) {
-    var el = $("requestMessage");
+  function setMessage(id, text, mode) {
+    var el = $(id);
+    if (!el) return;
     el.textContent = text || "";
     el.classList.toggle("is-success", mode === "success");
     el.classList.toggle("is-error", mode === "error");
@@ -100,6 +96,11 @@
     };
   }
 
+  function findCatalogItem(itemType, itemId) {
+    var list = itemType === "component" ? state.components : state.products;
+    return list.find(function (item) { return item.id === itemId; }) || null;
+  }
+
   function activeItems() {
     var list = state.itemType === "component" ? state.components : state.products;
     if (state.itemType === "product") {
@@ -115,17 +116,17 @@
     }).slice(0, 60);
   }
 
-  function lineKey(item) {
-    return item.type + ":" + item.id;
+  function lineKey(itemType, itemId) {
+    return itemType + ":" + itemId;
   }
 
-  function addLine(item) {
-    var key = lineKey(item);
-    var existing = state.lines.find(function (line) { return line.key === key; });
+  function addRequestLine(item) {
+    var key = lineKey(item.type, item.id);
+    var existing = state.requestLines.find(function (line) { return line.key === key; });
     if (existing) {
       existing.qty += item.type === "component" ? 0.5 : 1;
     } else {
-      state.lines.push({
+      state.requestLines.push({
         key: key,
         itemType: item.type,
         itemId: item.id,
@@ -141,55 +142,33 @@
     render();
   }
 
-  function findCatalogItem(itemType, itemId) {
-    var list = itemType === "component" ? state.components : state.products;
-    return list.find(function (item) { return item.id === itemId; }) || null;
-  }
-
-  function setLinesFromRequest(request) {
-    state.selectedRequest = request;
-    state.lines = (request.items || []).map(function (requestItem) {
-      var catalogItem = findCatalogItem(requestItem.itemType, requestItem.itemId);
-      var item = catalogItem || {
-        id: requestItem.itemId,
-        type: requestItem.itemType,
-        name: requestItem.name || requestItem.itemId,
-        unit: requestItem.unit || "",
-        stock: 0,
-        unitCost: 0,
-      };
-      return {
-        key: requestItem.itemType + ":" + requestItem.itemId,
-        itemType: requestItem.itemType,
-        itemId: requestItem.itemId,
-        name: requestItem.name || item.name,
-        unit: requestItem.unit || item.unit,
-        qty: numberValue(requestItem.requestedQty),
-        requestedQty: numberValue(requestItem.requestedQty),
-        unitCost: item.unitCost || 0,
-        meta: "Theo yêu cầu " + request.id + " · Tồn " + formatter.format(numberValue(item.stock)) + " " + (requestItem.unit || item.unit || ""),
-      };
-    });
-    $("purchaseNote").value = request.note ? "Theo yêu cầu " + request.id + ": " + request.note : "Theo yêu cầu " + request.id;
-    setMessage("Đã nạp list yêu cầu. Chỉ cần kiểm lại SL nhận và nhập giá.", "success");
+  function removeRequestLine(key) {
+    state.requestLines = state.requestLines.filter(function (line) { return line.key !== key; });
     render();
   }
 
-  function removeLine(key) {
-    state.lines = state.lines.filter(function (line) { return line.key !== key; });
-    render();
-  }
-
-  function totals() {
-    return state.lines.reduce(function (acc, line) {
-      acc.qty += numberValue(line.qty);
-      acc.amount += numberValue(line.qty) * numberValue(line.unitCost);
+  function totals(lines) {
+    return (lines || []).reduce(function (acc, line) {
+      var qty = numberValue(line.qty);
+      acc.qty += qty;
+      acc.amount += qty * numberValue(line.unitCost);
       return acc;
     }, { qty: 0, amount: 0 });
   }
 
+  function selectedSupplier() {
+    var supplierId = $("supplierSelect").value;
+    var supplier = state.suppliers.find(function (item) { return item.id === supplierId; });
+    var typedName = $("supplierName").value.trim();
+    return {
+      id: supplier ? supplier.id : "",
+      name: typedName || (supplier ? supplier.name : ""),
+    };
+  }
+
   function renderSuppliers() {
     var select = $("supplierSelect");
+    if (!select) return;
     var current = select.value;
     select.innerHTML = '<option value="">Chọn nhà cung cấp hoặc nhập mới</option>';
     state.suppliers.forEach(function (supplier) {
@@ -201,55 +180,26 @@
     select.value = current;
   }
 
-  function renderRequests() {
-    var box = $("requestList");
-    box.innerHTML = "";
-    box.classList.toggle("empty", state.requests.length === 0);
-    if (!state.requests.length) {
-      box.textContent = "Chưa có yêu cầu đang mở.";
-      return;
-    }
-    state.requests.forEach(function (request) {
-      var itemCount = (request.items || []).length;
-      var qty = (request.items || []).reduce(function (sum, item) {
-        return sum + numberValue(item.requestedQty);
-      }, 0);
-      var card = document.createElement("article");
-      card.className = "request-item";
-      if (state.selectedRequest && state.selectedRequest.id === request.id) {
-        card.classList.add("is-active");
-      }
-      card.innerHTML = [
-        '<div class="request-item-main">',
-        '<strong></strong>',
-        '<small></small>',
-        '</div>',
-        '<button class="ghost-button" type="button">Nhập phiếu này</button>'
-      ].join("");
-      card.querySelector("strong").textContent = request.id + " · " + itemCount + " dòng";
-      card.querySelector("small").textContent = [
-        request.requesterName ? "NV kho: " + request.requesterName : "NV kho",
-        "SL yêu cầu " + formatter.format(qty),
-        request.note || "",
-      ].filter(Boolean).join(" · ");
-      card.querySelector("button").addEventListener("click", function () {
-        setLinesFromRequest(request);
-      });
-      box.appendChild(card);
+  function renderWorkflowTabs() {
+    document.querySelectorAll(".workflow-tab").forEach(function (button) {
+      button.classList.toggle("is-active", button.dataset.workflow === state.activeTab);
+    });
+    document.querySelectorAll(".workflow-panel").forEach(function (panel) {
+      panel.classList.toggle("is-hidden", panel.dataset.panel !== state.activeTab);
+    });
+  }
+
+  function renderTypeTabs() {
+    document.querySelectorAll(".type-tab").forEach(function (button) {
+      button.classList.toggle("is-active", button.dataset.type === state.itemType);
     });
   }
 
   function renderResults() {
     var box = $("itemResults");
     var template = $("resultTemplate");
+    if (!box || !template) return;
     box.innerHTML = "";
-    if (state.selectedRequest) {
-      var locked = document.createElement("div");
-      locked.className = "draft-lines empty";
-      locked.textContent = "Đang nhập theo list yêu cầu. Bỏ chọn yêu cầu nếu muốn thêm hàng khác.";
-      box.appendChild(locked);
-      return;
-    }
     var items = activeItems();
     if (!items.length) {
       var empty = document.createElement("div");
@@ -268,27 +218,29 @@
         item.unit ? "Đơn vị " + item.unit : "",
       ].filter(Boolean).join(" · ");
       node.querySelector(".result-stock").textContent = "Tồn " + formatter.format(item.stock);
-      node.addEventListener("click", function () { addLine(item); });
+      node.addEventListener("click", function () { addRequestLine(item); });
       box.appendChild(node);
     });
   }
 
-  function renderLines() {
-    var box = $("draftLines");
+  function renderLineList(options) {
+    var box = $(options.boxId);
     var template = $("lineTemplate");
+    if (!box || !template) return;
+    var lines = options.lines || [];
     box.innerHTML = "";
-    box.classList.toggle("empty", state.lines.length === 0);
-    if (!state.lines.length) {
-      box.textContent = "Chọn hàng ở bên trái để tạo phiếu nhập.";
+    box.classList.toggle("empty", lines.length === 0);
+    if (!lines.length) {
+      box.textContent = options.emptyText;
       return;
     }
-    state.lines.forEach(function (line) {
+    lines.forEach(function (line) {
       var node = template.content.firstElementChild.cloneNode(true);
       node.querySelector(".line-name").textContent = line.name;
-      node.querySelector(".line-meta").textContent = line.meta + " · " + line.unit;
+      node.querySelector(".line-meta").textContent = line.meta + (line.unit ? " · " + line.unit : "");
       var qtyInput = node.querySelector(".line-qty");
       var costInput = node.querySelector(".line-cost");
-      qtyInput.parentNode.firstChild.nodeValue = state.selectedRequest ? "SL nhận " : "SL yêu cầu/nhận ";
+      qtyInput.parentNode.firstChild.nodeValue = options.qtyLabel + " ";
       qtyInput.value = line.qty;
       costInput.value = line.unitCost;
       node.querySelector(".line-subtotal").textContent = money(numberValue(line.qty) * numberValue(line.unitCost));
@@ -301,76 +253,166 @@
         render();
       });
       var removeBtn = node.querySelector(".line-remove");
-      if (state.selectedRequest) {
-        removeBtn.textContent = "Theo list";
+      if (options.lockRemove) {
+        removeBtn.textContent = "Theo yêu cầu";
         removeBtn.disabled = true;
+      } else {
+        removeBtn.addEventListener("click", function () { removeRequestLine(line.key); });
       }
-      removeBtn.addEventListener("click", function () {
-        if (state.selectedRequest) return;
-        removeLine(line.key);
-      });
       box.appendChild(node);
     });
   }
 
-  function renderTotals() {
-    var total = totals();
-    $("draftTitle").textContent = state.lines.length ? state.lines.length + " dòng hàng" : "Chưa có dòng hàng";
-    $("lineCount").textContent = String(state.lines.length);
-    $("qtyTotal").textContent = formatter.format(total.qty);
-    $("amountTotal").textContent = money(total.amount);
-    $("savePurchaseBtn").disabled = state.saving || !state.lines.length;
+  function renderRequestDraft() {
+    renderLineList({
+      boxId: "requestDraftLines",
+      lines: state.requestLines,
+      qtyLabel: "SL yêu cầu",
+      emptyText: "Tìm hàng ở bên trái để tạo list yêu cầu mua hàng.",
+      lockRemove: false,
+    });
+    var total = totals(state.requestLines);
+    $("requestLineCount").textContent = String(state.requestLines.length);
+    $("requestQtyTotal").textContent = formatter.format(total.qty);
   }
 
-  function renderTabs() {
-    document.querySelectorAll(".type-tab").forEach(function (button) {
-      button.classList.toggle("is-active", button.dataset.type === state.itemType);
+  function renderReceiveLines() {
+    renderLineList({
+      boxId: "receiveLines",
+      lines: state.receiveLines,
+      qtyLabel: "SL nhận",
+      emptyText: "Chưa có sản phẩm nào đang được yêu cầu.",
+      lockRemove: true,
+    });
+    var total = totals(state.receiveLines.filter(function (line) { return numberValue(line.qty) > 0; }));
+    $("lineCount").textContent = String(state.receiveLines.length);
+    $("qtyTotal").textContent = formatter.format(total.qty);
+    $("amountTotal").textContent = money(total.amount);
+    $("savePurchaseBtn").disabled = state.saving || !state.receiveLines.some(function (line) {
+      return numberValue(line.qty) > 0;
+    });
+  }
+
+  function renderRequestSummary() {
+    var box = $("requestSummaryList");
+    if (!box) return;
+    box.innerHTML = "";
+    box.classList.toggle("empty", state.requests.length === 0);
+    if (!state.requests.length) {
+      box.textContent = "Chưa có yêu cầu đang mở.";
+      return;
+    }
+    state.requests.forEach(function (request) {
+      var itemCount = (request.items || []).length;
+      var qty = (request.items || []).reduce(function (sum, item) {
+        return sum + numberValue(item.requestedQty);
+      }, 0);
+      var card = document.createElement("article");
+      card.className = "request-item";
+      card.innerHTML = '<div class="request-item-main"><strong></strong><small></small></div>';
+      card.querySelector("strong").textContent = request.id + " · " + itemCount + " dòng";
+      card.querySelector("small").textContent = [
+        request.requesterName ? "NV kho: " + request.requesterName : "NV kho",
+        "SL yêu cầu " + formatter.format(qty),
+        request.note || "",
+      ].filter(Boolean).join(" · ");
+      box.appendChild(card);
+    });
+  }
+
+  function syncReceiveLines() {
+    var previous = new Map(state.receiveLines.map(function (line) { return [line.key, line]; }));
+    var grouped = new Map();
+    state.requests.forEach(function (request) {
+      (request.items || []).forEach(function (requestItem) {
+        var itemType = requestItem.itemType === "component" ? "component" : "product";
+        var itemId = requestItem.itemId || requestItem.productId || requestItem.componentId;
+        if (!itemId) return;
+        var key = lineKey(itemType, itemId);
+        var catalogItem = findCatalogItem(itemType, itemId) || {};
+        if (!grouped.has(key)) {
+          var old = previous.get(key);
+          grouped.set(key, {
+            key: key,
+            itemType: itemType,
+            itemId: itemId,
+            name: requestItem.name || catalogItem.name || itemId,
+            unit: requestItem.unit || catalogItem.unit || "",
+            requestedQty: 0,
+            qty: old ? old.qty : 0,
+            unitCost: old ? old.unitCost : numberValue(catalogItem.unitCost),
+            sourceRequestIds: [],
+            meta: "",
+          });
+        }
+        var line = grouped.get(key);
+        line.requestedQty += numberValue(requestItem.requestedQty);
+        if (line.sourceRequestIds.indexOf(request.id) === -1) {
+          line.sourceRequestIds.push(request.id);
+        }
+        if (!previous.has(key)) line.qty = line.requestedQty;
+      });
+    });
+    state.receiveLines = Array.from(grouped.values()).map(function (line) {
+      line.meta = "Đang yêu cầu " + formatter.format(line.requestedQty) + " " + line.unit + " · " + line.sourceRequestIds.length + " phiếu";
+      return line;
     });
   }
 
   function render() {
-    renderTabs();
-    renderRequests();
-    renderSelectedRequest();
+    renderWorkflowTabs();
+    renderTypeTabs();
     renderResults();
-    renderLines();
-    renderTotals();
+    renderRequestDraft();
+    renderRequestSummary();
+    renderReceiveLines();
   }
 
-  function renderSelectedRequest() {
-    var box = $("selectedRequestBox");
-    if (!state.selectedRequest) {
-      box.classList.add("is-hidden");
-      box.innerHTML = "";
-      return;
-    }
-    box.classList.remove("is-hidden");
-    box.innerHTML = [
-      '<strong></strong>',
-      '<small></small>',
-      '<button class="ghost-button" type="button">Bỏ chọn yêu cầu</button>'
-    ].join("");
-    box.querySelector("strong").textContent = "Đang nhập theo yêu cầu " + state.selectedRequest.id;
-    box.querySelector("small").textContent = state.selectedRequest.note || "List đã được nhân viên kho tạo sẵn.";
-    box.querySelector("button").addEventListener("click", function () {
-      state.selectedRequest = null;
-      render();
-    });
-  }
-
-  function selectedSupplier() {
-    var supplierId = $("supplierSelect").value;
-    var supplier = state.suppliers.find(function (item) { return item.id === supplierId; });
-    var typedName = $("supplierName").value.trim();
+  function buildRequestPayload() {
     return {
-      id: supplier ? supplier.id : "",
-      name: typedName || (supplier ? supplier.name : ""),
+      requesterName: $("requesterName").value.trim(),
+      note: $("requestNote").value.trim(),
+      items: state.requestLines.map(function (line) {
+        return {
+          itemType: line.itemType,
+          itemId: line.itemId,
+          name: line.name,
+          unit: line.unit,
+          requestedQty: numberValue(line.qty),
+        };
+      }),
     };
   }
 
-  function buildPayload() {
+  function createPurchaseRequest() {
+    var payload = buildRequestPayload();
+    if (!payload.items.length) {
+      setMessage("requestMessage", "Vui lòng thêm hàng vào list yêu cầu.", "error");
+      return;
+    }
+    var invalid = payload.items.find(function (item) { return numberValue(item.requestedQty) <= 0; });
+    if (invalid) {
+      setMessage("requestMessage", "Số lượng yêu cầu phải lớn hơn 0.", "error");
+      return;
+    }
+    setMessage("requestMessage", "Đang lưu yêu cầu...");
+    api("/purchase-requests", { method: "POST", body: payload })
+      .then(function (data) {
+        setMessage("requestMessage", "Đã lưu yêu cầu " + (data.id || "") + ".", "success");
+        $("requestNote").value = "";
+        state.requestLines = [];
+        return loadRequests();
+      })
+      .catch(function (err) {
+        setMessage("requestMessage", (err && err.message) || "Không thể lưu yêu cầu.", "error");
+      })
+      .finally(render);
+  }
+
+  function buildPurchasePayload() {
     var supplier = selectedSupplier();
-    var total = totals();
+    var lines = state.receiveLines.filter(function (line) { return numberValue(line.qty) > 0; });
+    var total = totals(lines);
     return {
       clientOpId: genClientOpId(),
       supplierId: supplier.id || undefined,
@@ -378,8 +420,8 @@
       paymentMethod: $("paymentMethod").value,
       paidAmount: $("paidAmount").value === "" ? Math.round(total.amount) : Math.round(numberValue($("paidAmount").value)),
       note: $("purchaseNote").value.trim(),
-      sourceRequestId: state.selectedRequest ? state.selectedRequest.id : undefined,
-      items: state.lines.map(function (line) {
+      sourceRequestIds: unique(lines.flatMap(function (line) { return line.sourceRequestIds || []; })),
+      items: lines.map(function (line) {
         if (line.itemType === "component") {
           return {
             itemType: "component",
@@ -401,104 +443,58 @@
     };
   }
 
-  function validatePayload(payload) {
+  function unique(list) {
+    return Array.from(new Set((list || []).filter(Boolean)));
+  }
+
+  function validatePurchasePayload(payload) {
     if (!payload.paymentMethod) return "Vui lòng chọn phương thức thanh toán.";
-    if (!payload.items.length) return "Vui lòng thêm ít nhất một dòng hàng.";
-    var invalid = payload.items.find(function (item) {
-      return numberValue(item.qty) <= 0 || numberValue(item.unitCost) < 0;
-    });
-    if (invalid) return "Số lượng phải lớn hơn 0 và giá nhập không được âm.";
+    if (!payload.items.length) return "Chưa có dòng hàng nào có số lượng nhận.";
+    var invalidQty = payload.items.find(function (item) { return numberValue(item.qty) <= 0; });
+    if (invalidQty) return "Số lượng nhận phải lớn hơn 0.";
+    var invalidCost = payload.items.find(function (item) { return numberValue(item.unitCost) <= 0; });
+    if (invalidCost) return "Vui lòng nhập giá tiền cho từng sản phẩm được nhận.";
     return "";
   }
 
-  function resetDraft() {
-    state.lines = [];
-    state.selectedRequest = null;
-    $("paidAmount").value = "";
-    $("purchaseNote").value = "";
-    setMessage("");
-    render();
-  }
-
-  function buildRequestPayload() {
-    return {
-      requesterName: $("requesterName").value.trim(),
-      note: $("requestNote").value.trim(),
-      items: state.lines.map(function (line) {
-        return {
-          itemType: line.itemType,
-          itemId: line.itemId,
-          name: line.name,
-          unit: line.unit,
-          requestedQty: numberValue(line.qty),
-        };
-      }),
-    };
-  }
-
-  function createPurchaseRequest() {
-    var payload = buildRequestPayload();
-    if (!payload.items.length) {
-      setRequestMessage("Vui lòng thêm hàng vào draft trước khi tạo yêu cầu.", "error");
-      return;
-    }
-    var invalid = payload.items.find(function (item) { return numberValue(item.requestedQty) <= 0; });
-    if (invalid) {
-      setRequestMessage("Số lượng yêu cầu phải lớn hơn 0.", "error");
-      return;
-    }
-    setRequestMessage("Đang lưu yêu cầu...");
-    api("/purchase-requests", { method: "POST", body: payload })
-      .then(function (data) {
-        setRequestMessage("Đã lưu yêu cầu " + (data.id || "") + ".", "success");
-        $("requestNote").value = "";
-        state.lines = [];
-        return loadRequests();
-      })
-      .catch(function (err) {
-        setRequestMessage((err && err.message) || "Không thể lưu yêu cầu.", "error");
-      })
-      .finally(render);
-  }
-
-  function fulfillSelectedRequest(purchaseId) {
-    if (!state.selectedRequest || !purchaseId) return Promise.resolve();
-    return api("/purchase-requests", {
-      method: "POST",
-      body: {
-        action: "fulfill",
-        id: state.selectedRequest.id,
-        purchaseId: purchaseId,
-        fulfilledBy: selectedSupplier().name || "purchase-user",
-      },
-    }).then(loadRequests);
+  function fulfillRequestIds(requestIds, purchaseId) {
+    var ids = unique(requestIds);
+    return Promise.all(ids.map(function (id) {
+      return api("/purchase-requests", {
+        method: "POST",
+        body: {
+          action: "fulfill",
+          id: id,
+          purchaseId: purchaseId,
+          fulfilledBy: selectedSupplier().name || "purchase-user",
+        },
+      });
+    })).then(loadRequests);
   }
 
   function savePurchase() {
     if (state.saving) return;
-    var payload = buildPayload();
-    var error = validatePayload(payload);
+    var payload = buildPurchasePayload();
+    var error = validatePurchasePayload(payload);
     if (error) {
-      setMessage(error, "error");
+      setMessage("saveMessage", error, "error");
       return;
     }
     state.saving = true;
-    setMessage("Đang lưu phiếu nhập...");
-    renderTotals();
+    setMessage("saveMessage", "Đang lưu phiếu nhập...");
+    renderReceiveLines();
 
     api("/purchases", { method: "POST", body: payload })
       .then(function (data) {
-        setMessage("Đã lưu phiếu nhập " + (data.id || "") + ". Kho chính đã cập nhật.", "success");
-        return fulfillSelectedRequest(data.id).then(function () { return data; });
+        setMessage("saveMessage", "Đã lưu phiếu nhập " + (data.id || "") + ". Kho chính đã cập nhật.", "success");
+        return fulfillRequestIds(payload.sourceRequestIds, data.id);
       })
       .then(function () {
-        state.lines = [];
-        state.selectedRequest = null;
         $("paidAmount").value = "";
         return loadData(true);
       })
       .catch(function (err) {
-        setMessage((err && err.message) || "Không thể lưu phiếu nhập.", "error");
+        setMessage("saveMessage", (err && err.message) || "Không thể lưu phiếu nhập.", "error");
       })
       .finally(function () {
         state.saving = false;
@@ -506,7 +502,19 @@
       });
   }
 
+  function clearRequestDraft() {
+    state.requestLines = [];
+    setMessage("requestMessage", "");
+    render();
+  }
+
   function bindEvents() {
+    document.querySelectorAll(".workflow-tab").forEach(function (button) {
+      button.addEventListener("click", function () {
+        state.activeTab = button.dataset.workflow;
+        render();
+      });
+    });
     document.querySelectorAll(".type-tab").forEach(function (button) {
       button.addEventListener("click", function () {
         state.itemType = button.dataset.type;
@@ -519,12 +527,12 @@
       state.search = event.target.value;
       renderResults();
     });
-    $("clearDraftBtn").addEventListener("click", resetDraft);
+    $("clearRequestBtn").addEventListener("click", clearRequestDraft);
     $("savePurchaseBtn").addEventListener("click", savePurchase);
     $("createRequestBtn").addEventListener("click", createPurchaseRequest);
     $("refreshRequestsBtn").addEventListener("click", function () {
       loadRequests().then(render).catch(function (err) {
-        setRequestMessage((err && err.message) || "Không tải được yêu cầu.", "error");
+        setMessage("saveMessage", (err && err.message) || "Không tải được yêu cầu.", "error");
       });
     });
     $("supplierSelect").addEventListener("change", function () {
@@ -545,12 +553,13 @@
       state.components = (results[1].components || []).map(normalizeComponent);
       state.suppliers = results[2].suppliers || [];
       state.requests = results[3].requests || [];
+      syncReceiveLines();
       renderSuppliers();
       setStatus("Đã nối kho chính");
       render();
     }).catch(function (err) {
       setStatus("Lỗi kết nối kho", "error");
-      setMessage((err && err.message) || "Không tải được dữ liệu.", "error");
+      setMessage("saveMessage", (err && err.message) || "Không tải được dữ liệu.", "error");
       render();
     });
   }
@@ -558,12 +567,7 @@
   function loadRequests() {
     return api("/purchase-requests?status=open").then(function (data) {
       state.requests = data.requests || [];
-      if (state.selectedRequest) {
-        var stillOpen = state.requests.some(function (request) {
-          return request.id === state.selectedRequest.id;
-        });
-        if (!stillOpen) state.selectedRequest = null;
-      }
+      syncReceiveLines();
       return data;
     });
   }
