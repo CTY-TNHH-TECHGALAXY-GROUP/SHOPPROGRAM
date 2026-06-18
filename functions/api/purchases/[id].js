@@ -17,22 +17,38 @@ export const onRequestGet = async ({ env, params }) => {
   ).bind(params.id).first();
   if (!head) return notFound();
   const { results: productItems } = await env.DB.prepare(
-    `SELECT * FROM purchase_order_items WHERE purchase_id = ? ORDER BY rowid`
+    `SELECT poi.*,
+            COALESCE(NULLIF(poi.product_name, ''), p.name, poi.product_id) AS item_name,
+            p.barcode AS barcode,
+            p.sku AS sku,
+            p.unit AS stock_unit
+     FROM purchase_order_items poi
+     LEFT JOIN products p ON p.id = poi.product_id
+     WHERE poi.purchase_id = ?
+     ORDER BY poi.rowid`
   ).bind(params.id).all();
   const { results: componentItems } = await env.DB.prepare(
-    `SELECT *
-     FROM purchase_component_items
-     WHERE purchase_id = ?
-     ORDER BY rowid`
+    `SELECT pci.*,
+            COALESCE(NULLIF(pci.component_name, ''), c.label, pci.component_id) AS item_name,
+            c.unit AS stock_unit,
+            c.item_type AS component_type
+     FROM purchase_component_items pci
+     LEFT JOIN components c ON c.id = pci.component_id
+     WHERE pci.purchase_id = ?
+     ORDER BY pci.rowid`
   ).bind(params.id).all();
   const items = (productItems || []).map((item) => ({
     ...item,
     item_type: "product",
+    display_name: item.item_name || item.product_name || item.product_id,
+    stock_unit: item.stock_unit || item.unit || "",
   })).concat((componentItems || []).map((item) => ({
     ...item,
     item_type: "component",
     product_id: item.component_id,
     product_name: item.component_name,
+    display_name: item.item_name || item.component_name || item.component_id,
+    stock_unit: item.stock_unit || item.unit || "",
   })));
   return json({ ok: true, purchase: head, items: items || [] });
 };

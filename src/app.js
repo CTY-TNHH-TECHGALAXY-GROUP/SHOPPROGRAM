@@ -10291,6 +10291,179 @@
       return L(map[type] || type);
     }
 
+    function getStockDetailItemName(item) {
+      if (!item) return "";
+      return item.display_name || item.displayName ||
+        item.item_name || item.itemName ||
+        item.product_name || item.productName ||
+        item.component_name || item.componentName ||
+        item.ingredient_name || item.ingredientName ||
+        item.name || item.label ||
+        item.product_id || item.productId ||
+        item.component_id || item.componentId ||
+        item.ingredient_id || item.ingredientId ||
+        L("Không rõ mặt hàng / Unknown item");
+    }
+
+    function getStockDetailItemType(item) {
+      if (!item) return "product";
+      if (item.item_type === "component" || item.itemType === "component" || item.component_id || item.componentId) {
+        return "component";
+      }
+      return "product";
+    }
+
+    function getStockDetailUnit(item) {
+      return (item && (item.purchase_unit || item.purchaseUnit || item.unit || item.stock_unit || item.stockUnit || item.base_unit || item.baseUnit)) || "";
+    }
+
+    function getStockDetailQty(item, preferPurchaseQty) {
+      if (!item) return 0;
+      var value = preferPurchaseQty
+        ? (item.purchase_qty != null ? item.purchase_qty : item.purchaseQty)
+        : (item.qty != null ? item.qty : item.quantity);
+      if (value == null) {
+        value = item.base_qty != null ? item.base_qty : item.baseQty;
+      }
+      if (value == null) {
+        value = item.purchase_qty != null ? item.purchase_qty : item.purchaseQty;
+      }
+      return Number(value) || 0;
+    }
+
+    function getStockDetailUnitCost(item) {
+      if (!item) return 0;
+      return Number(
+        item.purchase_unit_cost != null ? item.purchase_unit_cost :
+        item.purchaseUnitCost != null ? item.purchaseUnitCost :
+        item.unit_cost != null ? item.unit_cost :
+        item.unitCost != null ? item.unitCost :
+        item.price != null ? item.price :
+        item.cost != null ? item.cost : 0
+      ) || 0;
+    }
+
+    function getStockDetailLineTotal(item) {
+      if (!item) return 0;
+      var explicit = item.subtotal != null ? item.subtotal :
+        item.line_total != null ? item.line_total :
+        item.lineTotal != null ? item.lineTotal :
+        item.total_cost != null ? item.total_cost :
+        item.totalCost;
+      if (explicit != null) return Number(explicit) || 0;
+      return getStockDetailQty(item, true) * getStockDetailUnitCost(item);
+    }
+
+    function renderStockDetailLine(item, index, options) {
+      var opts = options || {};
+      var type = getStockDetailItemType(item);
+      var qty = getStockDetailQty(item, opts.preferPurchaseQty);
+      var unit = getStockDetailUnit(item);
+      var unitCost = getStockDetailUnitCost(item);
+      var total = getStockDetailLineTotal(item);
+      var hasPrice = unitCost > 0 || total > 0;
+      var stockQty = getStockDetailQty(item, false);
+      var showStockQty = opts.showStockQty && stockQty && stockQty !== qty;
+      var itemCode = (item && (item.barcode || item.sku || item.product_id || item.productId || item.component_id || item.componentId)) || "";
+      return html`
+        <article key=${(item && item.id) || index} className="stock-detail-line">
+          <div className="stock-detail-main">
+            <span className="stock-badge">${type === "component" ? L("Thành phần / Component") : L("Sản phẩm / Product")}</span>
+            <strong>${getStockDetailItemName(item)}</strong>
+            <small>
+              ${itemCode ? itemCode + " · " : ""}
+              ${L("Số lượng / Qty")}: ${formatQuantity(qty, 3)}${unit ? " " + unit : ""}
+              ${showStockQty ? " · " + L("Quy đổi tồn / Stock qty") + ": " + formatQuantity(stockQty, 3) + ((item.unit || "") ? " " + item.unit : "") : ""}
+            </small>
+          </div>
+          <div className="stock-detail-money">
+            <small>${L("Đơn giá / Unit price")}</small>
+            <strong>${hasPrice ? formatCurrency(unitCost) : "—"}</strong>
+          </div>
+          <div className="stock-detail-money">
+            <small>${L("Thành tiền / Amount")}</small>
+            <strong>${hasPrice ? formatCurrency(total) : "—"}</strong>
+          </div>
+        </article>
+      `;
+    }
+
+    function renderPurchaseDetailModal() {
+      if (!purchaseDetail) return null;
+      var purchase = purchaseDetail.purchase || {};
+      return html`
+        <div className="detail-modal-backdrop" role="presentation" onClick=${function () { setPurchaseDetail(null); }}>
+          <section className="detail-modal surface" role="dialog" aria-modal="true" onClick=${function (event) { event.stopPropagation(); }}>
+            <div className="detail-modal-head">
+              <div>
+                <p className="eyebrow">${L("Chi tiết phiếu nhập / Purchase Detail")}</p>
+                <h3 className="section-title">${purchaseDetail.id}</h3>
+                <small>${formatDateTime(purchase.created_at)}</small>
+              </div>
+              <button className="ghost-btn" onClick=${function () { setPurchaseDetail(null); }}>${L("Đóng / Close")}</button>
+            </div>
+
+            ${purchaseDetail.loading ? html`<div className="empty-state align-left">${L("Đang tải chi tiết... / Loading detail...")}</div>` : null}
+            ${purchaseDetail.error ? html`<div className="empty-state align-left" style=${{ color: "#c0392b" }}>${purchaseDetail.error}</div>` : null}
+
+            ${!purchaseDetail.loading ? html`
+              <div className="detail-summary-grid">
+                <div><span>${L("Nhà cung cấp / Supplier")}</span><strong>${purchase.supplier_name || purchase.supplierName || L("Không rõ / Unknown")}</strong></div>
+                <div><span>${L("Thanh toán / Payment")}</span><strong>${L(getPaymentMethodLabel(purchase.payment_method || purchase.paymentMethod))}</strong></div>
+                <div><span>${L("Trạng thái / Status")}</span><strong>${L(purchaseStatusLabel(purchase))}</strong></div>
+                <div><span>${L("Tổng / Total")}</span><strong>${formatCurrency(purchase.total_amount || purchase.totalAmount || 0)}</strong></div>
+              </div>
+              <div className="stock-detail-list">
+                ${(purchaseDetail.items || []).length
+                  ? purchaseDetail.items.map(function (item, index) {
+                      return renderStockDetailLine(item, index, { preferPurchaseQty: true, showStockQty: true });
+                    })
+                  : html`<div className="empty-state align-left">${L("Phiếu chưa có dòng hàng. / No line items.")}</div>`}
+              </div>
+            ` : null}
+          </section>
+        </div>
+      `;
+    }
+
+    function renderIssueDetailModal() {
+      if (!issueDetail) return null;
+      var issue = issueDetail.issue || {};
+      return html`
+        <div className="detail-modal-backdrop" role="presentation" onClick=${function () { setIssueDetail(null); }}>
+          <section className="detail-modal surface" role="dialog" aria-modal="true" onClick=${function (event) { event.stopPropagation(); }}>
+            <div className="detail-modal-head">
+              <div>
+                <p className="eyebrow">${L("Chi tiết phiếu xuất / Issue Detail")}</p>
+                <h3 className="section-title">${issueDetail.id}</h3>
+                <small>${formatDateTime(issue.created_at)}</small>
+              </div>
+              <button className="ghost-btn" onClick=${function () { setIssueDetail(null); }}>${L("Đóng / Close")}</button>
+            </div>
+
+            ${issueDetail.loading ? html`<div className="empty-state align-left">${L("Đang tải chi tiết... / Loading detail...")}</div>` : null}
+            ${issueDetail.error ? html`<div className="empty-state align-left" style=${{ color: "#c0392b" }}>${issueDetail.error}</div>` : null}
+
+            ${!issueDetail.loading ? html`
+              <div className="detail-summary-grid">
+                <div><span>${L("Lý do / Reason")}</span><strong>${issue.reason || ""}</strong></div>
+                <div><span>${L("Trạng thái / Status")}</span><strong>${issue.status || ""}</strong></div>
+                <div><span>${L("Ngày tạo / Created")}</span><strong>${formatDateTime(issue.created_at)}</strong></div>
+                <div><span>${L("Ghi chú / Note")}</span><strong>${issue.note || L("Không có / None")}</strong></div>
+              </div>
+              <div className="stock-detail-list">
+                ${(issueDetail.items || []).length
+                  ? issueDetail.items.map(function (item, index) {
+                      return renderStockDetailLine(item, index, { preferPurchaseQty: false });
+                    })
+                  : html`<div className="empty-state align-left">${L("Phiếu chưa có dòng hàng. / No line items.")}</div>`}
+              </div>
+            ` : null}
+          </section>
+        </div>
+      `;
+    }
+
     // ==================================================================
     // RENDER: NHẬP HÀNG VIEW
     // ==================================================================
@@ -10590,45 +10763,8 @@
                     `;
                   })}
             </div>
-            ${purchaseDetail ? html`
-              <div className="surface section-card form-card" style=${{ marginTop: 16, boxShadow: "none" }}>
-                <div className="section-top">
-                  <div>
-                    <p className="eyebrow">${L("Chi tiết phiếu nhập / Purchase Detail")}</p>
-                    <h3 className="template-preview-title">${purchaseDetail.id}</h3>
-                  </div>
-                  <button className="ghost-btn" onClick=${function () { setPurchaseDetail(null); }}>${L("Đóng / Close")}</button>
-                </div>
-                ${purchaseDetail.loading ? html`<div className="empty-state align-left">${L("Đang tải chi tiết... / Loading detail...")}</div>` : null}
-                ${purchaseDetail.error ? html`<div className="empty-state align-left" style=${{ color: "#c0392b" }}>${purchaseDetail.error}</div>` : null}
-                ${purchaseDetail.purchase && !purchaseDetail.loading ? html`
-                  <div className="field-grid">
-                    <div className="empty-state align-left"><strong>${L("Nhà cung cấp / Supplier")}:</strong> ${purchaseDetail.purchase.supplier_name || L("Không rõ / Unknown")}</div>
-                    <div className="empty-state align-left"><strong>${L("Thanh toán / Payment")}:</strong> ${L(getPaymentMethodLabel(purchaseDetail.purchase.payment_method))}</div>
-                    <div className="empty-state align-left"><strong>${L("Trạng thái / Status")}:</strong> ${L(purchaseStatusLabel(purchaseDetail.purchase))}</div>
-                    <div className="empty-state align-left"><strong>${L("Tổng / Total")}:</strong> ${formatCurrency(purchaseDetail.purchase.total_amount || 0)}</div>
-                  </div>
-                ` : null}
-                <div className="management-list" style=${{ marginTop: 12 }}>
-                  ${(purchaseDetail.items || []).length ? purchaseDetail.items.map(function (item, index) {
-                    var itemType = item.item_type === "component" ? L("Thành phần / Component") : L("Sản phẩm / Product");
-                    var purchaseQty = Number(item.purchase_qty != null ? item.purchase_qty : item.qty) || 0;
-                    var purchaseUnit = item.purchase_unit || item.unit || "";
-                    var baseQty = Number(item.qty) || 0;
-                    return html`
-                      <article key=${item.id || index} className="list-row list-row-actions">
-                        <div>
-                          <strong>${item.product_name || item.component_name || item.product_id || item.component_id}</strong>
-                          <p>${itemType} · ${L("Nhập / Purchased")}: ${purchaseQty} ${purchaseUnit} · ${L("Quy đổi tồn / Stock qty")}: ${baseQty} ${item.unit || ""}</p>
-                        </div>
-                        <strong>${formatCurrency(item.subtotal || (purchaseQty * (Number(item.purchase_unit_cost != null ? item.purchase_unit_cost : item.unit_cost) || 0)))}</strong>
-                      </article>
-                    `;
-                  }) : (!purchaseDetail.loading ? html`<div className="empty-state align-left">${L("Phiếu chưa có dòng hàng. / No line items.")}</div>` : null)}
-                </div>
-              </div>
-            ` : null}
           </section>
+          ${renderPurchaseDetailModal()}
         </section>
       `;
     }
@@ -10823,42 +10959,8 @@
                     `;
                   })}
             </div>
-            ${issueDetail ? html`
-              <div className="surface section-card form-card" style=${{ marginTop: 16, boxShadow: "none" }}>
-                <div className="section-top">
-                  <div>
-                    <p className="eyebrow">${L("Chi tiết phiếu xuất / Issue Detail")}</p>
-                    <h3 className="template-preview-title">${issueDetail.id}</h3>
-                  </div>
-                  <button className="ghost-btn" onClick=${function () { setIssueDetail(null); }}>${L("Đóng / Close")}</button>
-                </div>
-                ${issueDetail.loading ? html`<div className="empty-state align-left">${L("Đang tải chi tiết... / Loading detail...")}</div>` : null}
-                ${issueDetail.error ? html`<div className="empty-state align-left" style=${{ color: "#c0392b" }}>${issueDetail.error}</div>` : null}
-                ${issueDetail.issue && !issueDetail.loading ? html`
-                  <div className="field-grid">
-                    <div className="empty-state align-left"><strong>${L("Lý do / Reason")}:</strong> ${issueDetail.issue.reason || ""}</div>
-                    <div className="empty-state align-left"><strong>${L("Trạng thái / Status")}:</strong> ${issueDetail.issue.status || ""}</div>
-                    <div className="empty-state align-left"><strong>${L("Ngày tạo / Created")}:</strong> ${formatDateTime(issueDetail.issue.created_at)}</div>
-                    <div className="empty-state align-left"><strong>${L("Ghi chú / Note")}:</strong> ${issueDetail.issue.note || L("Không có / None")}</div>
-                  </div>
-                ` : null}
-                <div className="management-list" style=${{ marginTop: 12 }}>
-                  ${(issueDetail.items || []).length ? issueDetail.items.map(function (item, index) {
-                    var itemType = item.item_type === "component" ? L("Thành phần / Component") : L("Sản phẩm / Product");
-                    return html`
-                      <article key=${item.id || index} className="list-row list-row-actions">
-                        <div>
-                          <strong>${item.product_name || item.component_id || item.product_id}</strong>
-                          <p>${itemType} · ${L("Số lượng / Qty")}: ${Number(item.qty) || 0}</p>
-                        </div>
-                        <strong>${formatCurrency((Number(item.qty) || 0) * (Number(item.unit_cost) || 0))}</strong>
-                      </article>
-                    `;
-                  }) : (!issueDetail.loading ? html`<div className="empty-state align-left">${L("Phiếu chưa có dòng hàng. / No line items.")}</div>` : null)}
-                </div>
-              </div>
-            ` : null}
           </section>
+          ${renderIssueDetailModal()}
         </section>
       `;
     }
