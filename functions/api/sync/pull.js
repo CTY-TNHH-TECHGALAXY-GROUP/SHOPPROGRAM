@@ -98,7 +98,7 @@ export const onRequestGet = async ({ env, request }) => {
              WHERE si.sale_id = s.id
            ) as items_json
          FROM sales s 
-         WHERE s.created_at > ? 
+         WHERE s.order_status = 'held' OR s.created_at > ? 
          ORDER BY s.created_at DESC LIMIT 1000`
       ).bind(since).all(),
 

@@ -1,4 +1,27 @@
 (function () {
+  // Layer 2 Security: Disable DevTools shortcuts and right-click context menu
+  window.addEventListener("contextmenu", function (e) {
+    e.preventDefault();
+    alert("Tính năng này đã bị vô hiệu hóa trên hệ thống. / This feature has been disabled on the system.");
+  });
+
+  window.addEventListener("keydown", function (e) {
+    var isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+    var isF12 = e.key === "F12" || e.keyCode === 123;
+    var isInspect = (e.ctrlKey && e.shiftKey && (e.key === "I" || e.key === "i" || e.keyCode === 73)) || 
+                    (isMac && e.metaKey && e.altKey && (e.key === "I" || e.key === "i" || e.keyCode === 73));
+    var isConsole = (e.ctrlKey && e.shiftKey && (e.key === "J" || e.key === "j" || e.keyCode === 74)) || 
+                    (isMac && e.metaKey && e.altKey && (e.key === "J" || e.key === "j" || e.keyCode === 74));
+    var isElement = (e.ctrlKey && e.shiftKey && (e.key === "C" || e.key === "c" || e.keyCode === 67)) || 
+                    (isMac && e.metaKey && e.altKey && (e.key === "C" || e.key === "c" || e.keyCode === 67));
+    var isViewSource = (e.ctrlKey && (e.key === "U" || e.key === "u" || e.keyCode === 85)) ||
+                       (isMac && e.metaKey && (e.key === "U" || e.key === "u" || e.keyCode === 85));
+
+    if (isF12 || isInspect || isConsole || isElement || isViewSource) {
+      e.preventDefault();
+      alert("Tính năng này đã bị vô hiệu hóa trên hệ thống. / This feature has been disabled on the system.");
+    }
+  });
   var root = document.getElementById("root");
 
   if (!root) {
@@ -1890,6 +1913,13 @@
     return /^(https?:\/\/|data:image\/|blob:|\.\/|\/|assets\/|images\/)/i.test(imageValue);
   }
 
+  function truncateWords(str, maxWords) {
+    if (!str) return "";
+    var words = str.split(/\s+/).filter(Boolean);
+    if (words.length <= maxWords) return str;
+    return words.slice(0, maxWords).join(" ") + "...";
+  }
+
   function normalizeProduct(product) {
     var baseProduct = product || {};
     var explicitInventoryMode = baseProduct.inventoryMode || baseProduct.inventory_mode || "";
@@ -2246,6 +2276,26 @@
       { id: "settings", label: "Cài đặt / Settings", icon: "⚙️", help: "Cửa hàng, hóa đơn, mã vạch / Shop, invoice, barcode" }
     ];
 
+    if (props.user) {
+      var role = props.user.role;
+      items = items.filter(function (item) {
+        if (role === "admin") return true;
+        if (role === "manager") {
+          return item.id !== "settings";
+        }
+        if (role === "cashier") {
+          return item.id === "pos";
+        }
+        if (role === "inventory") {
+          return item.id === "inventory";
+        }
+        if (role === "accountant") {
+          return item.id === "dashboard";
+        }
+        return false;
+      });
+    }
+
     return html`
       <div className=${"drawer-backdrop" + (props.open ? " is-open" : "")} onClick=${props.onClose}>
         <aside className=${"drawer surface" + (props.open ? " is-open" : "")} onClick=${function (event) {
@@ -2417,6 +2467,80 @@
         setToasts(function (cur) { return cur.filter(function (t) { return t.id !== id; }); });
       }, 3500);
     }
+
+    var [currentUser, setCurrentUser] = useState(null);
+    var [authLoading, setAuthLoading] = useState(true);
+    var [loginEmail, setLoginEmail] = useState("");
+    var [loginPassword, setLoginPassword] = useState("");
+    var [loginError, setLoginError] = useState("");
+    var [loginSubmitting, setLoginSubmitting] = useState(false);
+
+    useEffect(function () {
+      fetch("/api/auth/me")
+        .then(function (res) {
+          if (res.ok) {
+            return res.json().then(function (data) {
+              if (data.ok && data.user) {
+                setCurrentUser(data.user);
+              }
+              setAuthLoading(false);
+            });
+          }
+          setAuthLoading(false);
+        })
+        .catch(function () {
+          setAuthLoading(false);
+        });
+    }, []);
+
+    function getFirstAllowedView(role) {
+      if (role === "inventory") return "inventory";
+      if (role === "accountant") return "dashboard";
+      return "pos";
+    }
+
+    function handleLoginSubmit(e) {
+      e.preventDefault();
+      if (!loginEmail || !loginPassword) {
+        setLoginError("Vui lòng nhập đầy đủ thông tin. / Please fill in all fields.");
+        return;
+      }
+      setLoginError("");
+      setLoginSubmitting(true);
+      fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: loginEmail, password: loginPassword })
+      })
+        .then(function (res) {
+          return res.json().then(function (data) {
+            setLoginSubmitting(false);
+            if (res.ok && data.ok && data.user) {
+              setCurrentUser(data.user);
+              setActiveView(getFirstAllowedView(data.user.role));
+              setLoginEmail("");
+              setLoginPassword("");
+            } else {
+              setLoginError(data.error || "Login failed");
+            }
+          });
+        })
+        .catch(function () {
+          setLoginSubmitting(false);
+          setLoginError("Network error. Please try again.");
+        });
+    }
+
+    function handleLogout() {
+      fetch("/api/auth/logout", { method: "POST" })
+        .then(function () {
+          setCurrentUser(null);
+        })
+        .catch(function () {
+          setCurrentUser(null);
+        });
+    }
+
     var [suppliers, setSuppliers] = useState([]);
     var [purchases, setPurchases] = useState([]);
     var [issues, setIssues] = useState([]);
@@ -2448,6 +2572,14 @@
     // POS category sidebar: which parent categories are currently expanded.
     // Object map { [parentId]: true }. Starts empty (all collapsed).
     var [expandedCategories, setExpandedCategories] = useState({});
+    var [expandedProducts, setExpandedProducts] = useState({});
+    function toggleProductExpanded(name) {
+      setExpandedProducts(function (cur) {
+        var next = Object.assign({}, cur);
+        if (next[name]) delete next[name]; else next[name] = true;
+        return next;
+      });
+    }
     // Quick-add category form toggle on POS sidebar
     var [showQuickCategoryForm, setShowQuickCategoryForm] = useState(false);
     var [orderStatusFilter, setOrderStatusFilter] = useState("all");
@@ -2579,6 +2711,7 @@
     var syncDebounceRef = useRef(null);
     var orderNumberReservationsRef = useRef({});
     var initialOrderReservationStartedRef = useRef(false);
+    var lastSyncedOrderStatesRef = useRef({});
 
     useEffect(function () {
       var timer = window.setInterval(function () {
@@ -2905,11 +3038,168 @@
       }
     }, [orders, activeOrderId]);
 
+    function buildOpenOrderSalePayload(orderSnapshot) {
+      var saleTotals = calculateOrder(orderSnapshot, addOns);
+      var payload = buildSalePayload(orderSnapshot, saleTotals, uid("open-sync-op"));
+      payload.orderStatus = getOrderWorkflowStatus(orderSnapshot); // "new", "preparing", "held", "needs_action"
+      
+      var originalNote = orderSnapshot.note || "";
+      var cleanedNote = originalNote.replace(/^\[status:[a-zA-Z0-9_-]+\]\s*/, "");
+      payload.note = "[status:" + payload.orderStatus + "]" + (cleanedNote ? " " + cleanedNote : "");
+      
+      payload.paymentMethod = "other";
+      payload.paid = 0;
+      return payload;
+    }
+
+    function syncOpenOrder(order) {
+      if (!order.reservedSaleId) return Promise.resolve(null);
+      var payload = buildOpenOrderSalePayload(order);
+      return syncApi("/sales", {
+        method: "POST",
+        body: payload
+      }).catch(function (err) {
+        if (window && window.console) {
+          window.console.warn("syncOpenOrder failed for order " + order.id, err);
+        }
+      });
+    }
+
+    var openOrderSyncDebounceRef = useRef({});
+
+    useEffect(function () {
+      if (!window.ShopFlowSync) return undefined;
+
+      // 1. Detect removed orders (cancelled/deleted)
+      var currentOrderIds = new Set(orders.map(function (o) { return o.id; }));
+      Object.keys(lastSyncedOrderStatesRef.current).forEach(function (orderId) {
+        if (!currentOrderIds.has(orderId)) {
+          var lastStateStr = lastSyncedOrderStatesRef.current[orderId];
+          try {
+            var lastState = JSON.parse(lastStateStr);
+            if (lastState && lastState.reservedSaleId) {
+              var isCompleted = sales.some(function (s) {
+                return s.id === lastState.reservedSaleId || s.orderId === orderId;
+              });
+              if (!isCompleted) {
+                syncApi("/sales", {
+                  method: "POST",
+                  body: {
+                    id: lastState.reservedSaleId,
+                    orderId: orderId,
+                    orderStatus: "cancelled",
+                    items: []
+                  }
+                }).catch(function (err) {
+                  if (window && window.console) {
+                    window.console.warn("Could not cancel deleted order on server", err);
+                  }
+                });
+              }
+            }
+          } catch (_) {}
+          delete lastSyncedOrderStatesRef.current[orderId];
+        }
+      });
+
+      // 2. Detect created or modified orders to sync
+      orders.forEach(function (order) {
+        if (!order.reservedSaleId) return;
+
+        var orderStr = JSON.stringify(order);
+        var lastSyncedStr = lastSyncedOrderStatesRef.current[order.id] || "";
+
+        if (orderStr !== lastSyncedStr) {
+          if (openOrderSyncDebounceRef.current[order.id]) {
+            window.clearTimeout(openOrderSyncDebounceRef.current[order.id]);
+          }
+
+          openOrderSyncDebounceRef.current[order.id] = window.setTimeout(function () {
+            var syncingStr = orderStr;
+            syncOpenOrder(order).then(function () {
+              lastSyncedOrderStatesRef.current[order.id] = syncingStr;
+            });
+            delete openOrderSyncDebounceRef.current[order.id];
+          }, 1000);
+        }
+      });
+
+      return function () {
+        Object.keys(openOrderSyncDebounceRef.current).forEach(function (orderId) {
+          if (openOrderSyncDebounceRef.current[orderId]) {
+            window.clearTimeout(openOrderSyncDebounceRef.current[orderId]);
+          }
+        });
+      };
+    }, [orders, sales]);
+
     // ---------- Remote API sync wiring ----------
     useEffect(function () {
       if (!window.ShopFlowSync) return undefined;
 
       function handlePulled(data) {
+        function mapHeldSaleToOrder(row) {
+          var items = [];
+          if (row.items_json) {
+            try {
+              var parsed = Array.isArray(row.items_json) ? row.items_json : JSON.parse(row.items_json);
+              if (Array.isArray(parsed)) {
+                items = parsed.map(function (it) {
+                  var addOnIds = [];
+                  var addonsJson = it.addonsJson || it.addons_json;
+                  if (addonsJson) {
+                    try {
+                      var parsedAddons = typeof addonsJson === "string" ? JSON.parse(addonsJson) : addonsJson;
+                      if (Array.isArray(parsedAddons)) {
+                        addOnIds = parsedAddons.map(function (a) { return a.id; }).filter(Boolean);
+                      }
+                    } catch (_) {}
+                  }
+                  return {
+                    productId: it.productId || it.product_id,
+                    name: it.name || it.product_name,
+                    qty: Number(it.qty) || 0,
+                    price: Number(it.price || it.unit_price) || 0,
+                    unit: it.unit || "",
+                    addOnIds: addOnIds,
+                    note: it.note || ""
+                  };
+                });
+              }
+            } catch (_) {}
+          }
+          
+          var note = row.note || "";
+          var status = "open";
+          var match = note.match(/^\[status:([a-zA-Z0-9_-]+)\]/);
+          if (match) {
+            var parsedStatus = match[1];
+            if (parsedStatus === "new") status = "open";
+            else if (parsedStatus === "preparing") status = "preparing";
+            else if (parsedStatus === "held") status = "held";
+            else if (parsedStatus === "needs_action") status = "needs_action";
+            else if (parsedStatus === "ready") status = "ready";
+          }
+          var cleanedNote = note.replace(/^\[status:[a-zA-Z0-9_-]+\]\s*/, "");
+          
+          return {
+            id: row.order_id || row.orderId || "",
+            items: items,
+            takeAway: false,
+            discountAmount: Number(row.discount) || 0,
+            status: status,
+            syncError: "",
+            syncRetryCount: 0,
+            createdAt: Number(row.created_at) || Date.now(),
+            customerName: row.customer_name || "Khách lẻ / Walk-in",
+            paymentMethod: normalizePaymentMethod(row.payment_method) || "",
+            cashReceived: Number(row.paid) || 0,
+            orderNumberSource: "server",
+            reservedSaleId: row.id,
+            note: cleanedNote
+          };
+        }
+
         // Merge products + inventory from server. Server is source of truth
         // for stock numbers; local edits are pushed via outbox, so by the
         // time we pull again, server already has them.
@@ -3116,7 +3406,7 @@
               if (!isKnownTechnicalTestSale(s)) byId[s.id] = s;
             });
             data.recentSales.filter(function (row) {
-              return !isKnownTechnicalTestSale(row);
+              return !isKnownTechnicalTestSale(row) && row.order_status === "completed";
             }).forEach(function (row) {
               var items = [];
               if (row.items_json) {
@@ -3170,6 +3460,48 @@
             });
             merged.sort(function (a, b) { return b.createdAt - a.createdAt; });
             return merged.slice(0, 1000); // Keep last 1000 sales
+          });
+
+          // ----- Sync Open/Held Orders -----
+          var heldSales = data.recentSales.filter(function (row) { return row.order_status === "held"; });
+          var nonHeldSales = data.recentSales.filter(function (row) { return row.order_status === "completed" || row.order_status === "cancelled"; });
+
+          var pulledOpenOrders = heldSales.map(mapHeldSaleToOrder);
+
+          var completedOrCancelledSaleIds = new Set();
+          var completedOrCancelledOrderIds = new Set();
+          nonHeldSales.forEach(function (row) {
+            completedOrCancelledSaleIds.add(row.id);
+            if (row.order_id) completedOrCancelledOrderIds.add(row.order_id);
+          });
+
+          setOrders(function (currentOrders) {
+            var updatedOrders = currentOrders.filter(function (order) {
+              if (order.reservedSaleId && completedOrCancelledSaleIds.has(order.reservedSaleId)) return false;
+              if (completedOrCancelledOrderIds.has(order.id)) return false;
+              return true;
+            });
+
+            pulledOpenOrders.forEach(function (pulled) {
+              var existingIdx = updatedOrders.findIndex(function (o) {
+                return o.id === pulled.id || (o.reservedSaleId && o.reservedSaleId === pulled.reservedSaleId);
+              });
+
+              if (existingIdx !== -1) {
+                var existing = updatedOrders[existingIdx];
+                var localStateStr = JSON.stringify(existing);
+                var lastSyncedStr = lastSyncedOrderStatesRef.current[existing.id] || "";
+                if (localStateStr === lastSyncedStr) {
+                  updatedOrders[existingIdx] = pulled;
+                  lastSyncedOrderStatesRef.current[pulled.id] = JSON.stringify(pulled);
+                }
+              } else {
+                updatedOrders.push(pulled);
+                lastSyncedOrderStatesRef.current[pulled.id] = JSON.stringify(pulled);
+              }
+            });
+
+            return ensureAtLeastOneOrder(updatedOrders);
           });
         }
       }
@@ -7210,19 +7542,12 @@
         window.alert(L("Sản lượng thực tế phải lớn hơn 0. / Actual output must be greater than 0."));
         return;
       }
-      var selectedAddOnIds = Array.isArray(productionBatchDraft.addOnIds) ? productionBatchDraft.addOnIds : [];
-      var selectedAddOns = selectedAddOnIds.map(function (id) {
-        return addOns.find(function (addOn) { return addOn.id === id; });
-      }).filter(Boolean);
       var outputComponent = components.find(function (component) { return component.id === recipe.outputComponentId; });
       var nowForConfirmation = Date.now();
       var inputSummary = (recipe.inputs || []).map(function (input) {
         var component = components.find(function (item) { return item.id === input.componentId; });
         return "- " + (component ? L(component.label) : input.componentId) + ": " + input.qty + " " + input.unit;
       }).join("\n");
-      var addOnSummary = selectedAddOns.length
-        ? selectedAddOns.map(function (addOn) { return "- " + L(addOn.label) + (Number(addOn.price) ? " +" + formatCurrency(addOn.price) : ""); }).join("\n")
-        : L("Không có add-ons / No add-ons");
       var confirmMessage = [
         L("Xác nhận tạo mẻ sơ chế? / Confirm production batch?"),
         "",
@@ -7231,10 +7556,7 @@
         L("Output / Output") + ": " + (outputComponent ? L(outputComponent.label) : recipe.outputComponentId) + " +" + actualOutputQty + " " + recipe.outputUnit,
         "",
         L("Inputs sẽ trừ / Inputs to deduct") + ":",
-        inputSummary || L("Không có input / No inputs"),
-        "",
-        L("Add-ons sẽ lưu / Add-ons to save") + ":",
-        addOnSummary
+        inputSummary || L("Không có input / No inputs")
       ].join("\n");
       if (!window.confirm(confirmMessage)) return;
       fetch("/api/production-batches", {
@@ -7243,7 +7565,7 @@
         body: JSON.stringify({
           productionRecipeId: recipe.id,
           actualOutputQuantity: actualOutputQty,
-          addOnIds: selectedAddOnIds,
+          addOnIds: [],
           note: productionBatchDraft.note || "",
           clientOpId: uid("op")
         })
@@ -8862,6 +9184,71 @@
     }
 
     function renderDashboardView() {
+      // Dynamic payment donut gradient
+      var paymentColors = {
+        cash: "#f05a16",
+        card: "#ff9c45",
+        bank_transfer: "#7acb91",
+        ewallet: "#6686ff",
+        other: "#c6c0b8"
+      };
+      var activePayments = (dashboardMetrics.paymentBreakdown || []).filter(function (item) {
+        return item.orders > 0 || item.revenue > 0;
+      });
+      var totalPaymentValue = activePayments.reduce(function (sum, item) {
+        return sum + (Number(item.revenue) || 0);
+      }, 0);
+      var paymentGradient = "conic-gradient(#efedea 0 100%)";
+      if (totalPaymentValue > 0) {
+        var segments = [];
+        var currentPercent = 0;
+        activePayments.forEach(function (item) {
+          var val = Number(item.revenue) || 0;
+          if (val <= 0) return;
+          var pct = (val / totalPaymentValue) * 100;
+          var nextPercent = currentPercent + pct;
+          var color = paymentColors[item.method] || paymentColors.other;
+          segments.push(color + " " + currentPercent.toFixed(2) + "% " + nextPercent.toFixed(2) + "%");
+          currentPercent = nextPercent;
+        });
+        if (segments.length > 0) {
+          paymentGradient = "conic-gradient(" + segments.join(", ") + ")";
+        }
+      }
+
+      // Dynamic status donut gradient
+      var statusColors = {
+        completed: "#35b86b",
+        preparing: "#f05a16",
+        held: "#a86a18",
+        needs_action: "#bf4f39",
+        new: "#6686ff",
+        other: "#c6c0b8"
+      };
+      var activeStatuses = (dashboardMetrics.statusBreakdown || []).filter(function (item) {
+        return item.orders > 0;
+      });
+      var totalStatusOrders = activeStatuses.reduce(function (sum, item) {
+        return sum + (Number(item.orders) || 0);
+      }, 0);
+      var statusGradient = "conic-gradient(#efedea 0 100%)";
+      if (totalStatusOrders > 0) {
+        var segments = [];
+        var currentPercent = 0;
+        activeStatuses.forEach(function (item) {
+          var val = Number(item.orders) || 0;
+          if (val <= 0) return;
+          var pct = (val / totalStatusOrders) * 100;
+          var nextPercent = currentPercent + pct;
+          var color = statusColors[item.id] || statusColors.other;
+          segments.push(color + " " + currentPercent.toFixed(2) + "% " + nextPercent.toFixed(2) + "%");
+          currentPercent = nextPercent;
+        });
+        if (segments.length > 0) {
+          statusGradient = "conic-gradient(" + segments.join(", ") + ")";
+        }
+      }
+
       var rangeOptions = [
         { id: "today",  label: "Theo ngày / Daily" },
         { id: "month",  label: "Theo tháng / Monthly" },
@@ -9026,7 +9413,13 @@
                         <div className="dashboard-product-image">
                           ${isProductImageUrl(p.image) ? html`<img src=${p.image} alt=${p.name} />` : html`<span>${p.image || "🛒"}</span>`}
                         </div>
-                        <strong>${p.name}</strong>
+                        <strong
+                          style=${{ cursor: "pointer", wordBreak: "break-word", overflowWrap: "anywhere" }}
+                          onClick=${function () { toggleProductExpanded(p.name); }}
+                          title=${L("Bấm để xem đầy đủ / Click to see full name")}
+                        >
+                          ${expandedProducts[p.name] ? p.name : truncateWords(p.name, 4)}
+                        </strong>
                         <small>${L("Đã bán / Sold")} ${formatQuantity(p.qty, 2)}</small>
                       </article>
                     `;
@@ -9084,16 +9477,20 @@
               ${dashboardMetrics.paymentBreakdown.length ? html`
                 <div className="dashboard-breakdown">
                   <div className="dashboard-donut" style=${{
-                    background: "conic-gradient(#f05a16 0 54%, #ff9c45 54% 78%, #7acb91 78% 92%, #6686ff 92% 100%)"
+                    background: paymentGradient
                   }}>
                     <strong>${dashboardMetrics.ordersCount}</strong>
                     <small>${L("Tổng đơn / Orders")}</small>
                   </div>
                   <div className="list-stack compact-list">
                     ${dashboardMetrics.paymentBreakdown.map(function (item) {
+                      var color = paymentColors[item.method] || paymentColors.other;
                       return html`
                         <article className="dashboard-breakdown-row" key=${item.method}>
-                          <span>${L(item.label)}</span>
+                          <span style=${{ display: "inline-flex", alignItems: "center", gap: "8px" }}>
+                            <span style=${{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: color, flexShrink: 0 }}></span>
+                            ${L(item.label)}
+                          </span>
                           <strong>${item.percent}%</strong>
                           <small>${item.orders} ${L("đơn / orders")}</small>
                         </article>
@@ -9108,7 +9505,9 @@
               <h2 className="section-title">${L("Trạng thái đơn hàng / Order Status")}</h2>
               ${dashboardMetrics.statusBreakdown.length ? html`
                 <div className="dashboard-breakdown">
-                  <div className="dashboard-donut dashboard-donut-status">
+                  <div className="dashboard-donut dashboard-donut-status" style=${{
+                    background: statusGradient
+                  }}>
                     <strong>${dashboardMetrics.statusBreakdown.reduce(function (sum, item) { return sum + item.orders; }, 0)}</strong>
                     <small>${L("Tổng đơn / Orders")}</small>
                   </div>
@@ -9116,9 +9515,13 @@
                     ${dashboardMetrics.statusBreakdown.map(function (item) {
                       var totalStatusOrders = dashboardMetrics.statusBreakdown.reduce(function (sum, current) { return sum + current.orders; }, 0);
                       var pct = totalStatusOrders ? Math.round(item.orders / totalStatusOrders * 1000) / 10 : 0;
+                      var color = statusColors[item.id] || statusColors.other;
                       return html`
                         <article className="dashboard-breakdown-row" key=${item.id}>
-                          <span>${L(item.label)}</span>
+                          <span style=${{ display: "inline-flex", alignItems: "center", gap: "8px" }}>
+                            <span style=${{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: color, flexShrink: 0 }}></span>
+                            ${L(item.label)}
+                          </span>
                           <strong>${pct}%</strong>
                           <small>${item.orders} ${L("đơn / orders")}</small>
                         </article>
@@ -9681,7 +10084,7 @@
                       <h3>${L("Sau khi chuyển / After Conversion")}</h3>
                       <div className="conversion-preview-row">
                         <span>${conversionProduct ? conversionProduct.name : L("Sản phẩm")}</span>
-                        <strong>${conversionSourceStock} → ${Math.max(0, conversionSourceStock - conversionProductQty)}</strong>
+                        <strong>${formatQuantity(conversionSourceStock)} → ${formatQuantity(Math.max(0, conversionSourceStock - conversionProductQty))}</strong>
                       </div>
                       <div className="conversion-preview-row">
                         <span>
@@ -9690,8 +10093,8 @@
                             : (conversionComponent ? L(conversionComponent.label) : L("Thành phần / Component"))}
                         </span>
                         <strong>
-                          ${conversionDraft.componentMode === "new" ? 0 : conversionComponentStock}
-                          → ${(conversionDraft.componentMode === "new" ? 0 : conversionComponentStock) + conversionComponentQty}
+                          ${formatQuantity(conversionDraft.componentMode === "new" ? 0 : conversionComponentStock)}
+                          → ${formatQuantity((conversionDraft.componentMode === "new" ? 0 : conversionComponentStock) + conversionComponentQty)}
                         </strong>
                       </div>
                       <p className="muted-copy">
@@ -9848,29 +10251,6 @@
                       <strong>${L("Ngày giờ tạo mẻ / Batch time")}:</strong> ${formatDateTime(nowTick)}
                     </div>
 
-                    <div className="section-top" style=${{ marginTop: 8 }}>
-                      <div>
-                        <p className="eyebrow">${L("Add-ons / Add-ons")}</p>
-                        <h3 className="template-preview-title">${L("Ghi kèm mẻ sơ chế / Save with this batch")}</h3>
-                        <small>${L("Dữ liệu add-ons sẽ được lưu snapshot theo mẻ, không bị đổi khi sửa add-ons sau này. / Add-ons are saved as a batch snapshot.")}</small>
-                      </div>
-                    </div>
-                    <div className="addon-row">
-                      ${addOns.length ? addOns.map(function (addOn) {
-                        var active = selectedProductionBatchAddOnIds.indexOf(addOn.id) !== -1;
-                        return html`
-                          <button
-                            key=${addOn.id}
-                            type="button"
-                            className=${"addon-chip" + (active ? " is-active" : "")}
-                            onClick=${function () { toggleProductionBatchAddOn(addOn.id); }}
-                          >
-                            ${L(addOn.label)}${Number(addOn.price) ? " +" + formatCurrency(addOn.price) : ""}
-                          </button>
-                        `;
-                      }) : html`<span className="muted-copy">${L("Chưa có add-ons. / No add-ons yet.")}</span>`}
-                    </div>
-
                     ${selectedProductionRecipe ? html`
                       <div className="split-grid">
                         <div className="empty-state align-left">
@@ -9886,15 +10266,6 @@
                             var component = components.find(function (item) { return item.id === input.componentId; });
                             return (component ? L(component.label) : input.componentId) + " " + input.qty + input.unit;
                           }).join(", ")}
-                        </div>
-                        <div className="empty-state align-left">
-                          <strong>${L("Add-ons đã chọn / Selected Add-ons")}:</strong>
-                          ${selectedProductionBatchAddOnIds.length
-                            ? selectedProductionBatchAddOnIds.map(function (id) {
-                              var addOn = addOns.find(function (item) { return item.id === id; });
-                              return addOn ? L(addOn.label) : id;
-                            }).join(", ")
-                            : L("Không có / None")}
                         </div>
                       </div>
                     ` : null}
@@ -12224,6 +12595,71 @@
       `;
     }
 
+    if (authLoading) {
+      return html`
+        <div style=${{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh", background: "#fffaf4", fontFamily: "sans-serif" }}>
+          <div style=${{ textAlign: "center" }}>
+            <div style=${{ fontSize: 24, marginBottom: 12 }}>🍊</div>
+            <div style=${{ color: "#7b6b5d", fontSize: 14 }}>${L("Đang kiểm tra thông tin đăng nhập... / Checking credentials...")}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    if (!currentUser) {
+      return html`
+        <div style=${{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh", background: "#fffaf4", fontFamily: "sans-serif" }}>
+          <form onSubmit=${handleLoginSubmit} style=${{ background: "#ffffff", padding: "32px", borderRadius: "16px", border: "1px solid #eedecf", width: "100%", maxWidth: "380px", boxShadow: "0 8px 24px rgba(111,84,41,0.06)" }}>
+            <div style=${{ textAlign: "center", marginBottom: 24 }}>
+              <div style=${{ fontSize: 36, marginBottom: 8 }}>🍊</div>
+              <h2 style=${{ margin: 0, color: "#5b3a20", fontSize: "1.4rem" }}>${L("Đăng nhập POS / POS Login")}</h2>
+              <p style=${{ margin: "4px 0 0", color: "#a48a73", fontSize: "0.85rem" }}>${L("Sử dụng tài khoản hệ thống của bạn / Use your store credentials")}</p>
+            </div>
+            
+            ${loginError ? html`
+              <div style=${{ background: "#fde2e0", color: "#c0392b", padding: "10px 14px", borderRadius: "8px", fontSize: "0.85rem", marginBottom: 16, border: "1px solid #f9c1b9" }}>
+                ${loginError}
+              </div>
+            ` : null}
+
+            <div style=${{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <label style=${{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <span style=${{ fontSize: "0.85rem", fontWeight: "bold", color: "#5b3a20" }}>${L("Email / Tài khoản")}</span>
+                <input
+                  type="email"
+                  value=${loginEmail}
+                  onInput=${function (e) { setLoginEmail(e.target.value); }}
+                  placeholder="cashier@shopprogram.local"
+                  required
+                  style=${{ padding: "10px 12px", border: "1px solid #eedecf", borderRadius: "8px", fontSize: "0.95rem" }}
+                />
+              </label>
+              
+              <label style=${{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <span style=${{ fontSize: "0.85rem", fontWeight: "bold", color: "#5b3a20" }}>${L("Mật khẩu / Password")}</span>
+                <input
+                  type="password"
+                  value=${loginPassword}
+                  onInput=${function (e) { setLoginPassword(e.target.value); }}
+                  placeholder="••••••••"
+                  required
+                  style=${{ padding: "10px 12px", border: "1px solid #eedecf", borderRadius: "8px", fontSize: "0.95rem" }}
+                />
+              </label>
+
+              <button
+                type="submit"
+                disabled=${loginSubmitting}
+                style=${{ background: "#df5d16", color: "#ffffff", border: 0, padding: "12px", borderRadius: "8px", fontSize: "0.95rem", fontWeight: "bold", cursor: "pointer", marginTop: 8 }}
+              >
+                ${loginSubmitting ? L("Đang đăng nhập... / Logging in...") : L("Đăng nhập / Log In")}
+              </button>
+            </div>
+          </form>
+        </div>
+      `;
+    }
+
     return html`
       <div className="app-shell">
         <${MenuDrawer}
@@ -12231,6 +12667,7 @@
           activeView=${activeView}
           storeName=${settings.storeName}
           language=${language}
+          user=${currentUser}
           onClose=${function () { setMenuOpen(false); }}
           onSelect=${function (viewId) {
             setActiveView(viewId);
@@ -12291,6 +12728,25 @@
           </div>
 
           <div className="topbar-actions" style=${{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            ${currentUser ? html`
+              <div
+                className="lang-switch surface"
+                style=${{ display: "inline-flex", alignItems: "center", gap: 8, padding: "6px 10px" }}
+              >
+                <span style=${{ fontSize: 14 }}>👤</span>
+                <small style=${{ color: "#7b6b5d", fontWeight: "bold" }}>
+                  ${currentUser.email.split("@")[0]} (${currentUser.role})
+                </small>
+                <button
+                  type="button"
+                  className="ghost-btn"
+                  style=${{ padding: "2px 6px", fontSize: 11, marginLeft: 4, cursor: "pointer", background: "#fde2e0", color: "#c0392b", border: "1px solid #fde2e0", borderRadius: 4 }}
+                  onClick=${handleLogout}
+                >
+                  ${L("Đăng xuất / Logout")}
+                </button>
+              </div>
+            ` : null}
             <div
               className="lang-switch surface"
               title=${syncStatus.lastError ? syncStatus.lastError : (syncStatus.online ? "Supabase/API online" : "Offline")}

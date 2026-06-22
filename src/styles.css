@@ -1479,7 +1479,7 @@ textarea:focus {
 
 .conversion-board {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) minmax(280px, 0.8fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) minmax(280px, 320px);
   gap: 16px;
   align-items: stretch;
 }
@@ -2942,12 +2942,21 @@ button[disabled] {
 
 .dashboard-product-tile {
   position: relative;
-  display: grid;
-  gap: 8px;
-  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: 12px;
   background: rgba(255, 255, 255, 0.78);
+}
+
+.dashboard-product-tile strong {
+  font-size: 0.82rem;
+  line-height: 1.3;
+  word-break: normal;
+  overflow-wrap: break-word;
+  hyphens: auto;
 }
 
 .dashboard-rank {
@@ -2966,13 +2975,13 @@ button[disabled] {
 }
 
 .dashboard-product-image {
-  height: 82px;
-  border-radius: 14px;
+  height: 70px;
+  border-radius: 10px;
   overflow: hidden;
   display: grid;
   place-items: center;
   background: linear-gradient(135deg, #fff8d7, #edfbd7);
-  font-size: 2rem;
+  font-size: 1.8rem;
 }
 
 .dashboard-product-image img {
@@ -2998,14 +3007,24 @@ button[disabled] {
 }
 
 .dashboard-order-line {
-  display: grid;
-  grid-template-columns: 54px minmax(0, 1fr) auto auto auto;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
-  padding: 14px;
+  padding: 10px 14px;
   border: 1px solid var(--line);
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.84);
+}
+
+.dashboard-order-line time {
+  width: 54px;
+  flex-shrink: 0;
+}
+
+.dashboard-order-line > div {
+  flex: 1;
+  min-width: 120px;
 }
 
 .dashboard-order-line time,
@@ -3026,27 +3045,34 @@ button[disabled] {
 }
 
 .dashboard-breakdown {
-  display: grid;
-  grid-template-columns: 190px minmax(0, 1fr);
-  gap: 22px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
   align-items: center;
+  justify-content: center;
+}
+
+.dashboard-breakdown > .compact-list {
+  flex: 1;
+  min-width: 200px;
 }
 
 .dashboard-donut {
-  width: 170px;
-  height: 170px;
+  width: 140px;
+  height: 140px;
   border-radius: 50%;
   display: grid;
   place-items: center;
   align-content: center;
   color: var(--text);
   position: relative;
+  flex-shrink: 0;
 }
 
 .dashboard-donut::after {
   content: "";
   position: absolute;
-  inset: 34px;
+  inset: 26px;
   border-radius: 50%;
   background: #fffaf4;
   box-shadow: inset 0 0 0 1px rgba(111, 84, 41, 0.08);
@@ -3060,7 +3086,7 @@ button[disabled] {
 
 .dashboard-donut strong {
   font-family: "Space Grotesk", sans-serif;
-  font-size: 1.55rem;
+  font-size: 1.35rem;
 }
 
 .dashboard-donut small {
@@ -3069,7 +3095,7 @@ button[disabled] {
 }
 
 .dashboard-donut-status {
-  background: conic-gradient(#35b86b 0 60%, #f05a16 60% 80%, #6686ff 80% 94%, #c6c0b8 94% 100%);
+  /* background dynamically set inline in React */
 }
 
 .dashboard-breakdown-row {

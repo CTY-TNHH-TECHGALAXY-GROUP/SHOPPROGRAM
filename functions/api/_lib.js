@@ -442,3 +442,58 @@ export async function ensureProductionTables(db) {
      ON production_batches(output_component_id, created_at)`
   ).run();
 }
+
+const TOKEN_SECRET = "shopprogram_jwt_secret_key_2026";
+
+export async function createSignedToken(payload, secret) {
+  // Use Web Crypto API to sign a token with SHA-256
+  // Format: base64(payload) . signature
+  const payloadStr = btoa(JSON.stringify(payload));
+  const encoder = new TextEncoder();
+  const data = encoder.encode(payloadStr + "." + (secret || TOKEN_SECRET));
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  const signature = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+  return payloadStr + "." + signature;
+}
+
+export async function verifyToken(token, secret) {
+  if (!token) return null;
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 2) return null;
+    const [payloadStr, signature] = parts;
+    const encoder = new TextEncoder();
+    const data = encoder.encode(payloadStr + "." + (secret || TOKEN_SECRET));
+    const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    const expectedSignature = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+    if (signature !== expectedSignature) return null;
+    const payload = JSON.parse(atob(payloadStr));
+    if (payload.exp && Date.now() > payload.exp) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+export async function hashPassword(password, salt) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(password + (salt || ""));
+  const hash = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(hash))
+    .map(b => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+export function getCookie(cookieHeader, name) {
+  if (!cookieHeader) return null;
+  const pairs = cookieHeader.split(";");
+  for (const pair of pairs) {
+    const [k, v] = pair.split("=");
+    if (k && k.trim() === name) {
+      return decodeURIComponent(v.trim());
+    }
+  }
+  return null;
+}

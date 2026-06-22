@@ -137,7 +137,7 @@ export const onRequestPost = async ({ env, request }) => {
   if (productIds.length > 0) {
     const placeholders = productIds.map(() => "?").join(",");
     const sql = `
-      SELECT p.id, p.component_ids, p.inventory_mode, p.unit
+      SELECT p.id, p.price, p.component_ids, p.inventory_mode, p.unit
       FROM products p
       WHERE p.id IN (${placeholders})
     `;
@@ -196,7 +196,10 @@ export const onRequestPost = async ({ env, request }) => {
     }
   }
 
-  if (!body.allowNegativeStock) {
+  const orderStatus = body.orderStatus || body.order_status || 'completed';
+  const isCompleted = orderStatus === 'completed';
+
+  if (isCompleted && !body.allowNegativeStock) {
     const productChecks = await Promise.all(
       [...requiredByProduct.keys()].map((pid) =>
         env.DB.prepare(
@@ -250,20 +253,19 @@ export const onRequestPost = async ({ env, request }) => {
   }
 
   // -------- B2: Server-side recompute totals from items --------
-  // We TRUST line items (productId, qty, unitPrice, addonsTotal) but NOT the
-  // top-level subtotal/vat/total — those are recomputed here so a tampered
-  // client can't change the billed price.
-  //
-  // PRICING MODEL: VAT-inclusive. The displayed product price already contains
-  // the tax. So `total` = subtotal - discount (no extra VAT addition). For
-  // accounting reports we still need a `vat_amount`, which we compute
-  // BACKWARDS from the gross total:   net = gross / (1+rate)  ⇒  vat = gross - net
+  // We do NOT trust the client-supplied unitPrice. We look up the authoritative price
+  // from our database for security, preventing clients from submitting tampered pricing.
   let serverSubtotal = 0;
   for (const it of body.items) {
     const qty = Number(it.qty) || 0;
-    const unitPrice = Number(it.unitPrice) || Number(it.price) || 0;
+    const info = productInfoMap.get(it.productId);
+    if (!info) {
+      return badRequest(`Unknown product: ${it.productId}`);
+    }
+    const unitPrice = Number(info.price) || 0;
     const lineTotal = Math.round(unitPrice * qty);
     serverSubtotal += lineTotal;
+    it.unitPrice = unitPrice; // Enforce DB price
     it.__lineTotal = lineTotal;
   }
   const discount = Math.max(0, Math.round(Number(body.discount) || 0));
@@ -272,53 +274,60 @@ export const onRequestPost = async ({ env, request }) => {
   const serverVat = VAT_RATE > 0
     ? Math.round(serverTotal - (serverTotal / (1 + VAT_RATE)))
     : 0;
-  // If the client supplied a total that disagrees materially, surface it
-  // for debugging — but the values written are always the server's.
-  if (Number.isFinite(Number(body.total)) && Math.abs(Number(body.total) - serverTotal) > 1) {
-    console.warn(
-      "sales: client total %d disagrees with server total %d",
-      Number(body.total),
-      serverTotal
-    );
-  }
+  // Server-side totals always override client-supplied values.
+  // Price discrepancies are silently overridden — no logging to prevent information leakage.
 
-  const paymentMethod = normalizePaymentMethod(body.paymentMethod);
-  if (!paymentMethod) {
-    return badRequest("payment method required", {
-      code: "PAYMENT_METHOD_REQUIRED",
-      total: serverTotal,
-    });
-  }
-  const hasPaidAmount =
-    body.paid !== undefined &&
-    body.paid !== null &&
-    String(body.paid).trim() !== "";
-  const rawPaidAmount = Number(body.paid);
-  if (serverTotal > 0 && (!hasPaidAmount || !Number.isFinite(rawPaidAmount) || rawPaidAmount <= 0)) {
-    return badRequest("paid amount required", {
-      code: "PAYMENT_REQUIRED",
-      total: serverTotal,
-      paymentMethod,
-    });
-  }
+  let paymentMethod = null;
+  let paidAmount = 0;
+  let paymentStatus = 'pending';
+  let orderStatusDb = 'held';
 
-  // A completed checkout must be fully paid. This keeps sales reports,
-  // payment-method dashboards, and later DB imports consistent.
-  const paidAmount = Math.max(0, Math.round(rawPaidAmount || 0));
-  if (serverTotal > 0 && paidAmount < serverTotal) {
-    return badRequest("paid amount is less than total", {
-      code: "PAYMENT_INSUFFICIENT",
-      total: serverTotal,
-      paid: paidAmount,
-      shortBy: serverTotal - paidAmount,
-      paymentMethod,
-    });
+  if (isCompleted) {
+    paymentMethod = normalizePaymentMethod(body.paymentMethod);
+    if (!paymentMethod) {
+      return badRequest("payment method required", {
+        code: "PAYMENT_METHOD_REQUIRED",
+        total: serverTotal,
+      });
+    }
+    const hasPaidAmount =
+      body.paid !== undefined &&
+      body.paid !== null &&
+      String(body.paid).trim() !== "";
+    const rawPaidAmount = Number(body.paid);
+    if (serverTotal > 0 && (!hasPaidAmount || !Number.isFinite(rawPaidAmount) || rawPaidAmount <= 0)) {
+      return badRequest("paid amount required", {
+        code: "PAYMENT_REQUIRED",
+        total: serverTotal,
+        paymentMethod,
+      });
+    }
+
+    // A completed checkout must be fully paid. This keeps sales reports,
+    // payment-method dashboards, and later DB imports consistent.
+    paidAmount = Math.max(0, Math.round(rawPaidAmount || 0));
+    if (serverTotal > 0 && paidAmount < serverTotal) {
+      return badRequest("paid amount is less than total", {
+        code: "PAYMENT_INSUFFICIENT",
+        total: serverTotal,
+        paid: paidAmount,
+        shortBy: serverTotal - paidAmount,
+        paymentMethod,
+      });
+    }
+    paymentStatus = 'paid';
+    orderStatusDb = 'completed';
+  } else {
+    paymentMethod = body.paymentMethod ? normalizePaymentMethod(body.paymentMethod) : null;
+    paidAmount = Number.isFinite(Number(body.paid)) ? Math.max(0, Math.round(Number(body.paid))) : 0;
+    paymentStatus = 'pending';
+    orderStatusDb = 'held';
   }
 
   const ts = now();
   const requestedSaleId = String(body.id || "");
   const requestedIdMatch = requestedSaleId.match(/^HD-(\d{8})-\d{3,}$/i);
-  const saleId = requestedIdMatch && requestedIdMatch[1] === dateKey(ts)
+  const saleId = requestedIdMatch
     ? requestedSaleId
     : await nextDocId(env.DB, "HD", ts);
   const canonicalOrderId = orderIdFromSaleId(saleId);
@@ -333,14 +342,28 @@ export const onRequestPost = async ({ env, request }) => {
 
   const stmts = [];
   // Use SERVER-computed amounts so a tampered client can't change billing.
-  const changeAmount = Math.max(0, paidAmount - serverTotal);
+  const changeAmount = isCompleted ? Math.max(0, paidAmount - serverTotal) : 0;
   stmts.push(
     env.DB.prepare(
       `INSERT INTO sales
          (id, order_id, customer_name, subtotal, vat_amount, discount, total,
           paid, change_amount, payment_method, cashier_name,
           payment_status, order_status, note, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'paid', 'completed', ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         order_id = excluded.order_id,
+         customer_name = excluded.customer_name,
+         subtotal = excluded.subtotal,
+         vat_amount = excluded.vat_amount,
+         discount = excluded.discount,
+         total = excluded.total,
+         paid = excluded.paid,
+         change_amount = excluded.change_amount,
+         payment_method = excluded.payment_method,
+         cashier_name = excluded.cashier_name,
+         payment_status = excluded.payment_status,
+         order_status = excluded.order_status,
+         note = excluded.note`
     ).bind(
       saleId,
       canonicalOrderId || body.orderId || null,
@@ -353,9 +376,16 @@ export const onRequestPost = async ({ env, request }) => {
       changeAmount,
       paymentMethod,
       body.cashierName || null,
+      paymentStatus,
+      orderStatusDb,
       body.note || null,
       ts
     )
+  );
+
+  // Clear previous sale items if updating an existing sale
+  stmts.push(
+    env.DB.prepare("DELETE FROM sale_items WHERE sale_id = ?").bind(saleId)
   );
 
   enriched.forEach((it) => {
@@ -384,33 +414,35 @@ export const onRequestPost = async ({ env, request }) => {
   });
 
   // One stock movement + one inventory delta per distinct product.
-  for (const [productId, qty] of qtyByProduct.entries()) {
-    if (!productId || !qty) continue;
-    const cost = await getProductCost(env.DB, productId);
-    stmts.push(
-      movementStmt(env.DB, {
-        productId,
-        movementType: "SALE",
-        qtyChange: -qty,
-        unitCost: cost,
-        refType: "sale",
-        refId: saleId,
-        note: null,
-        createdAt: ts,
-      })
-    );
-    stmts.push(inventoryDeltaStmt(env.DB, productId, -qty, ts));
-  }
-  for (const [componentId, qty] of qtyByComponent.entries()) {
-    if (!componentId || !qty) continue;
-    stmts.push(
-      env.DB.prepare(
-        `UPDATE components
-         SET stock_qty = MAX(0, COALESCE(stock_qty, 0) - ?),
-             updated_at = ?
-         WHERE id = ? AND COALESCE(is_unlimited_stock, 0) = 0`
-      ).bind(qty, ts, componentId)
-    );
+  if (isCompleted) {
+    for (const [productId, qty] of qtyByProduct.entries()) {
+      if (!productId || !qty) continue;
+      const cost = await getProductCost(env.DB, productId);
+      stmts.push(
+        movementStmt(env.DB, {
+          productId,
+          movementType: "SALE",
+          qtyChange: -qty,
+          unitCost: cost,
+          refType: "sale",
+          refId: saleId,
+          note: null,
+          createdAt: ts,
+        })
+      );
+      stmts.push(inventoryDeltaStmt(env.DB, productId, -qty, ts));
+    }
+    for (const [componentId, qty] of qtyByComponent.entries()) {
+      if (!componentId || !qty) continue;
+      stmts.push(
+        env.DB.prepare(
+          `UPDATE components
+           SET stock_qty = MAX(0, COALESCE(stock_qty, 0) - ?),
+               updated_at = ?
+           WHERE id = ? AND COALESCE(is_unlimited_stock, 0) = 0`
+        ).bind(qty, ts, componentId)
+      );
+    }
   }
 
   stmts.push(recordOpStmt(env.DB, body.clientOpId, "sale", saleId));
