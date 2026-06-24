@@ -26,17 +26,36 @@ export const onRequestGet = async ({ env, request }) => {
   if (to)   { where.push("po.created_at <= ?"); binds.push(to); }
   if (status) { where.push("po.status = ?"); binds.push(status); }
   if (verificationStatus) { where.push("COALESCE(po.verification_status, 'verified') = ?"); binds.push(verificationStatus); }
+  const isSupabase = env.DB && env.DB.__provider === "supabase";
+  const productNameAgg = isSupabase
+    ? "STRING_AGG(product_name, ', ')"
+    : "GROUP_CONCAT(product_name, ', ')";
+  const componentNameAgg = isSupabase
+    ? "STRING_AGG(component_name, ', ')"
+    : "GROUP_CONCAT(component_name, ', ')";
   const sql = `
     SELECT po.*,
-           COALESCE(product_items.item_count, 0) + COALESCE(component_items.item_count, 0) AS item_count
+           COALESCE(product_items.item_count, 0) + COALESCE(component_items.item_count, 0) AS item_count,
+           TRIM(
+             COALESCE(product_items.item_names, '') ||
+             CASE
+               WHEN product_items.item_names IS NOT NULL AND component_items.item_names IS NOT NULL THEN ', '
+               ELSE ''
+             END ||
+             COALESCE(component_items.item_names, '')
+           ) AS item_names
     FROM purchase_orders po
     LEFT JOIN (
-      SELECT purchase_id, COUNT(*) AS item_count
+      SELECT purchase_id,
+             COUNT(*) AS item_count,
+             ${productNameAgg} AS item_names
       FROM purchase_order_items
       GROUP BY purchase_id
     ) product_items ON product_items.purchase_id = po.id
     LEFT JOIN (
-      SELECT purchase_id, COUNT(*) AS item_count
+      SELECT purchase_id,
+             COUNT(*) AS item_count,
+             ${componentNameAgg} AS item_names
       FROM purchase_component_items
       GROUP BY purchase_id
     ) component_items ON component_items.purchase_id = po.id

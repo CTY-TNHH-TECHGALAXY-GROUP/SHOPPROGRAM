@@ -60,6 +60,7 @@
     var init = opts || {};
     return fetch(API_BASE + path, {
       method: init.method || "GET",
+      credentials: "same-origin",
       headers: init.body
         ? { "Content-Type": "application/json", ...(init.headers || {}) }
         : init.headers || {},

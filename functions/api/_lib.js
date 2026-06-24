@@ -1,12 +1,11 @@
 // Shared helpers for Pages Functions API routes.
 
 export function json(data, init = {}) {
+  const headers = new Headers(init.headers || {});
+  headers.set("Content-Type", "application/json; charset=utf-8");
   return new Response(JSON.stringify(data), {
     status: init.status || 200,
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      ...(init.headers || {}),
-    },
+    headers,
   });
 }
 
@@ -162,12 +161,16 @@ export async function runIdempotentBatch(db, batch, clientOpId) {
     return { duplicate: false };
   } catch (err) {
     const msg = String((err && err.message) || err || "");
+    const lowerMsg = msg.toLowerCase();
+    const mentionsSyncLog = lowerMsg.indexOf("sync_log") !== -1;
     const isDup =
-      msg.indexOf("UNIQUE constraint failed") !== -1 ||
-      msg.toLowerCase().indexOf("duplicate key value violates unique constraint") !== -1 ||
-      msg.toLowerCase().indexOf("unique constraint") !== -1 && msg.indexOf("sync_log") !== -1 ||
-      msg.indexOf("constraint failed") !== -1 ||
-      msg.indexOf("D1_ERROR") !== -1 && msg.indexOf("sync_log") !== -1;
+      mentionsSyncLog && (
+        msg.indexOf("UNIQUE constraint failed") !== -1 ||
+        lowerMsg.indexOf("duplicate key value violates unique constraint") !== -1 ||
+        lowerMsg.indexOf("unique constraint") !== -1 ||
+        lowerMsg.indexOf("constraint failed") !== -1 ||
+        msg.indexOf("D1_ERROR") !== -1
+      );
     if (isDup && clientOpId) {
       const existing = await db.prepare(
         `SELECT ref_id FROM sync_log WHERE client_op_id = ?`
@@ -301,6 +304,30 @@ export async function ensureComponentsInventoryColumns(db) {
       `ALTER TABLE components ALTER COLUMN min_stock TYPE numeric USING min_stock::numeric`
     ).run();
   }
+}
+
+export async function ensureSalesStorageCompatibility(db) {
+  if (!db || db.__provider !== "supabase") return;
+
+  // D1 tolerated integer-ish columns more loosely. Supabase/Postgres is strict,
+  // so keep POS sale storage compatible with fractional kg/g/ml/l quantities
+  // and the newer order workflow states used by the UI.
+  await db.prepare(
+    `ALTER TABLE sale_items ALTER COLUMN qty TYPE numeric USING qty::numeric`
+  ).run();
+  await db.prepare(
+    `ALTER TABLE inventory ALTER COLUMN qty_on_hand TYPE numeric USING qty_on_hand::numeric`
+  ).run();
+  await db.prepare(
+    `ALTER TABLE stock_movements ALTER COLUMN qty_change TYPE numeric USING qty_change::numeric`
+  ).run();
+  await db.prepare(
+    `ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_order_status_check`
+  ).run();
+  await db.prepare(
+    `ALTER TABLE sales ADD CONSTRAINT sales_order_status_check
+     CHECK (order_status IN ('completed','cancelled','held','new','preparing','needs_action'))`
+  ).run();
 }
 
 export async function ensureStockIssueItemColumns(db) {

@@ -8,6 +8,7 @@
     selectedRequestId: "",
     requestLines: [],
     receiveLines: [],
+    requestFilters: { from: "", to: "", item: "", sort: "date_desc" },
     itemType: "product",
     search: "",
     saving: false,
@@ -23,6 +24,26 @@
   function numberValue(value) {
     var num = Number(value);
     return Number.isFinite(num) ? num : 0;
+  }
+
+  function normalizeSearchText(value) {
+    var text = String(value || "").toLowerCase();
+    try {
+      text = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    } catch (_) {}
+    return text.replace(/đ/g, "d").replace(/[^a-z0-9 ]+/g, " ").trim();
+  }
+
+  function dateInputStart(value) {
+    if (!value) return 0;
+    var parsed = new Date(value + "T00:00:00").getTime();
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function dateInputEnd(value) {
+    if (!value) return 0;
+    var parsed = new Date(value + "T23:59:59.999").getTime();
+    return Number.isFinite(parsed) ? parsed : 0;
   }
 
   function unitKey(value) {
@@ -228,6 +249,59 @@
 
   function selectedRequest() {
     return state.requests.find(function (request) { return request.id === state.selectedRequestId; }) || null;
+  }
+
+  function requestCreatedAt(request) {
+    var value = request && (request.createdAt || request.created_at || request.updatedAt || request.updated_at);
+    if (!value) return 0;
+    if (typeof value === "number") return value;
+    var parsed = new Date(value).getTime();
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function requestItemNames(request) {
+    return (request.items || []).map(function (item) {
+      return [
+        item.name,
+        item.itemId || item.productId || item.componentId,
+        item.unit
+      ].filter(Boolean).join(" ");
+    }).join(", ");
+  }
+
+  function requestSearchText(request) {
+    return [
+      request.id,
+      request.requestTitle,
+      request.requesterName,
+      request.note,
+      requestItemNames(request)
+    ].join(" ");
+  }
+
+  function filteredRequests() {
+    var from = dateInputStart(state.requestFilters.from);
+    var to = dateInputEnd(state.requestFilters.to);
+    var query = normalizeSearchText(state.requestFilters.item);
+    var list = state.requests.filter(function (request) {
+      var createdAt = requestCreatedAt(request);
+      if (from && createdAt && createdAt < from) return false;
+      if (to && createdAt && createdAt > to) return false;
+      if (query && normalizeSearchText(requestSearchText(request)).indexOf(query) === -1) return false;
+      return true;
+    }).slice();
+    list.sort(function (a, b) {
+      var mode = state.requestFilters.sort || "date_desc";
+      if (mode === "date_asc") return requestCreatedAt(a) - requestCreatedAt(b);
+      if (mode === "item_asc" || mode === "item_desc") {
+        var aName = normalizeSearchText(requestItemNames(a) || a.requestTitle || a.id);
+        var bName = normalizeSearchText(requestItemNames(b) || b.requestTitle || b.id);
+        var result = aName.localeCompare(bName);
+        return mode === "item_desc" ? -result : result;
+      }
+      return requestCreatedAt(b) - requestCreatedAt(a);
+    });
+    return list;
   }
 
   function renderSuppliers() {
@@ -438,13 +512,20 @@
   function renderRequestSummary() {
     var box = $("requestSummaryList");
     if (!box) return;
+    var requests = filteredRequests();
     box.innerHTML = "";
     box.classList.toggle("empty", state.requests.length === 0);
     if (!state.requests.length) {
       box.textContent = "Chưa có yêu cầu đang mở.";
       return;
     }
-    state.requests.forEach(function (request) {
+    if (!requests.length) {
+      box.classList.add("empty");
+      box.textContent = "Không có đơn yêu cầu phù hợp bộ lọc.";
+      return;
+    }
+    box.classList.remove("empty");
+    requests.forEach(function (request) {
       var itemCount = (request.items || []).length;
       var qty = (request.items || []).reduce(function (sum, item) {
         return sum + numberValue(item.requestedQty);
@@ -456,7 +537,9 @@
       card.querySelector("strong").textContent = (request.requestTitle || request.id) + " · " + itemCount + " dòng";
       card.querySelector("small").textContent = [
         request.requestTitle ? "Mã: " + request.id : "",
+        request.createdAt ? "Ngày: " + new Date(request.createdAt).toLocaleDateString("vi-VN") : "",
         request.requesterName ? "NV kho: " + request.requesterName : "NV kho",
+        requestItemNames(request),
         "SL yêu cầu " + formatter.format(qty),
         request.note || "",
       ].filter(Boolean).join(" · ");
@@ -732,6 +815,38 @@
         setMessage("saveMessage", (err && err.message) || "Không tải được yêu cầu.", "error");
       });
     });
+    ["requestFromDate", "requestToDate", "requestItemFilter", "requestSortMode"].forEach(function (id) {
+      var el = $(id);
+      if (!el) return;
+      el.addEventListener("input", function () {
+        state.requestFilters = {
+          from: $("requestFromDate") ? $("requestFromDate").value : "",
+          to: $("requestToDate") ? $("requestToDate").value : "",
+          item: $("requestItemFilter") ? $("requestItemFilter").value : "",
+          sort: $("requestSortMode") ? $("requestSortMode").value : "date_desc",
+        };
+        renderRequestSummary();
+      });
+      el.addEventListener("change", function () {
+        state.requestFilters = {
+          from: $("requestFromDate") ? $("requestFromDate").value : "",
+          to: $("requestToDate") ? $("requestToDate").value : "",
+          item: $("requestItemFilter") ? $("requestItemFilter").value : "",
+          sort: $("requestSortMode") ? $("requestSortMode").value : "date_desc",
+        };
+        renderRequestSummary();
+      });
+    });
+    if ($("clearRequestFiltersBtn")) {
+      $("clearRequestFiltersBtn").addEventListener("click", function () {
+        state.requestFilters = { from: "", to: "", item: "", sort: "date_desc" };
+        if ($("requestFromDate")) $("requestFromDate").value = "";
+        if ($("requestToDate")) $("requestToDate").value = "";
+        if ($("requestItemFilter")) $("requestItemFilter").value = "";
+        if ($("requestSortMode")) $("requestSortMode").value = "date_desc";
+        renderRequestSummary();
+      });
+    }
     $("supplierSelect").addEventListener("change", function () {
       var supplier = state.suppliers.find(function (item) { return item.id === $("supplierSelect").value; });
       if (supplier && !$("supplierName").value.trim()) $("supplierName").value = supplier.name;

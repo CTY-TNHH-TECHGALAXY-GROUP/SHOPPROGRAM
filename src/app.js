@@ -2476,7 +2476,7 @@
     var [loginSubmitting, setLoginSubmitting] = useState(false);
 
     useEffect(function () {
-      fetch("/api/auth/me")
+      fetch("/api/auth/me", { credentials: "same-origin" })
         .then(function (res) {
           if (res.ok) {
             return res.json().then(function (data) {
@@ -2509,6 +2509,7 @@
       setLoginSubmitting(true);
       fetch("/api/auth/login", {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: loginEmail, password: loginPassword })
       })
@@ -2532,12 +2533,14 @@
     }
 
     function handleLogout() {
-      fetch("/api/auth/logout", { method: "POST" })
+      fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" })
         .then(function () {
           setCurrentUser(null);
+          setActiveView("pos");
         })
         .catch(function () {
           setCurrentUser(null);
+          setActiveView("pos");
         });
     }
 
@@ -2550,6 +2553,7 @@
     var [purchaseItemType, setPurchaseItemType] = useState("product");
     var [purchaseProductSearch, setPurchaseProductSearch] = useState("");
     var [purchaseDetail, setPurchaseDetail] = useState(null);
+    var [purchaseHistoryFilter, setPurchaseHistoryFilter] = useState({ from: "", to: "", item: "", sort: "date_desc" });
     var [issueDraft, setIssueDraft] = useState({ reason: "damaged", note: "", items: [] });
     var [issueItemType, setIssueItemType] = useState("product");
     var [issueItemSearch, setIssueItemSearch] = useState("");
@@ -5394,6 +5398,22 @@
         setPosOrderPicked(false);
         pushToast("success", L("Đã lưu hóa đơn / Sale saved"));
       }).catch(function (error) {
+        if (error && error.status === 401) {
+          setCurrentUser(null);
+          setLoginError(L("Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại để lưu hóa đơn. / Session expired. Please log in again to save the sale."));
+          pushToast("error", L("Cần đăng nhập lại để lưu hóa đơn. / Please log in again to save the sale."));
+          setOrders(function (currentOrders) {
+            return currentOrders.map(function (order) {
+              return order.id === orderSnapshot.id
+                ? Object.assign({}, order, {
+                    status: orderSnapshot.status === "saving" ? "open" : orderSnapshot.status,
+                    syncError: L("Phiên đăng nhập đã hết hạn. Đăng nhập lại rồi bấm Thử lại. / Session expired. Log in again, then retry.")
+                  })
+                : order;
+            });
+          });
+          return;
+        }
         var message = error && error.data && error.data.error
           ? error.data.error
           : (error && error.message ? error.message : L("Không lưu được đơn hàng. / Could not save this order."));
@@ -8554,8 +8574,12 @@
       var completedSaleCards = (orderStatusFilter === "all" || orderStatusFilter === "completed")
         ? completedSalesToday
         : [];
-      var collapseOrderBoard = orderStatusFilter === "all" && !orderBoardExpanded;
-      var visibleOrderLimit = collapseOrderBoard ? ORDER_BOARD_COLLAPSED_LIMIT : Infinity;
+      var showCreateOrderCard = orderStatusFilter === "all" || orderStatusFilter === "new";
+      var collapseOrderBoard = !orderBoardExpanded;
+      var collapsedOrderCardLimit = Math.max(1, ORDER_BOARD_COLLAPSED_LIMIT - (showCreateOrderCard ? 1 : 0));
+      var visibleOrderLimit = collapseOrderBoard
+        ? collapsedOrderCardLimit
+        : Infinity;
       var displayedOrders = collapseOrderBoard ? filteredOrders.slice(0, visibleOrderLimit) : filteredOrders;
       var remainingSaleSlots = collapseOrderBoard ? Math.max(0, visibleOrderLimit - displayedOrders.length) : Infinity;
       var displayedCompletedSaleCards = collapseOrderBoard ? completedSaleCards.slice(0, remainingSaleSlots) : completedSaleCards;
@@ -8705,7 +8729,7 @@
               </div>
 
               <div className="order-switcher order-switcher-board">
-                ${(orderStatusFilter === "all" || orderStatusFilter === "new") ? html`
+                ${showCreateOrderCard ? html`
                   <button className="order-chip order-chip-create order-chip-board" onClick=${createNewOrder}>
                     <span>${L("+ Đơn mới / + New Order")}</span>
                     <small>${L("Tạo giỏ khác / Create another cart")}</small>
@@ -8754,7 +8778,7 @@
                     ${L("Không có đơn trong trạng thái này. / No orders in this status.")}
                   </div>
                 ` : null}
-                ${orderStatusFilter === "all" && totalBoardCards > ORDER_BOARD_COLLAPSED_LIMIT ? html`
+                ${totalBoardCards > collapsedOrderCardLimit ? html`
                   <button type="button" className="order-board-more-btn" onClick=${function () { setOrderBoardExpanded(!orderBoardExpanded); }}>
                     ${orderBoardExpanded
                       ? L("Thu gọn / Collapse")
@@ -10535,25 +10559,45 @@
                       </div>
                     ` : html`
                       <!-- Chip palette to toggle ingredients in/out of recipe -->
-                      <div style=${{ marginBottom: 12 }}>
-                        <p style=${{ margin: "0 0 6px", fontSize: 12, color: "#8a7565" }}>
+                      <div className="recipe-component-palette">
+                        <p className="recipe-component-helper">
                           ${L("Bấm để thêm/bỏ nguyên liệu: / Tap to add/remove ingredients:")}
                         </p>
-                        <div className="addon-row">
-                          ${components.map(function (component) {
-                            var inRecipe = isComponentInRecipe(productDraft, component.id);
-                            return html`
-                              <button
-                                key=${component.id}
-                                type="button"
-                                className=${"addon-chip" + (inRecipe ? " is-active" : "")}
-                                onClick=${function () { toggleProductDraftComponent(component.id); }}
-                              >
-                                ${inRecipe ? "✓ " : "+ "}${L(component.label)}
-                              </button>
-                            `;
-                          })}
-                        </div>
+                        ${COMPONENT_ITEM_TYPE_OPTIONS.map(function (typeOption) {
+                          var groupComponents = components
+                            .filter(function (component) {
+                              return normalizeComponentItemType(component.itemType || component.item_type) === typeOption.value;
+                            })
+                            .slice()
+                            .sort(function (a, b) {
+                              return L(a.label).localeCompare(L(b.label));
+                            });
+                          if (!groupComponents.length) return null;
+                          return html`
+                            <section key=${typeOption.value} className="recipe-component-group">
+                              <div className="recipe-component-group-head">
+                                <strong>${L(typeOption.label)}</strong>
+                                <span>${groupComponents.length}</span>
+                              </div>
+                              <div className="addon-row recipe-component-chips">
+                                ${groupComponents.map(function (component) {
+                                  var inRecipe = isComponentInRecipe(productDraft, component.id);
+                                  return html`
+                                    <button
+                                      key=${component.id}
+                                      type="button"
+                                      className=${"addon-chip recipe-component-chip" + (inRecipe ? " is-active" : "")}
+                                      onClick=${function () { toggleProductDraftComponent(component.id); }}
+                                    >
+                                      ${inRecipe ? "✓ " : "+ "}${L(component.label)}
+                                      ${component.unit ? html`<small>${component.unit}</small>` : null}
+                                    </button>
+                                  `;
+                                })}
+                              </div>
+                            </section>
+                          `;
+                        })}
                       </div>
 
                       <!-- Per-line recipe editor: qty + unit + note -->
@@ -10886,6 +10930,65 @@
       if ((po.verification_status || po.verificationStatus) === "rejected") return "Đã từ chối / Rejected";
       if ((po.status || "") === "completed") return "Đã nhập kho / Verified";
       return "Nháp / Draft";
+    }
+    function purchaseCreatedAtValue(po) {
+      var value = po && (po.created_at || po.createdAt || po.purchase_date || po.purchaseDate);
+      if (!value) return 0;
+      if (typeof value === "number") return value;
+      var parsed = new Date(value).getTime();
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+    function purchaseDateInputStart(value) {
+      if (!value) return 0;
+      var parsed = new Date(value + "T00:00:00").getTime();
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+    function purchaseDateInputEnd(value) {
+      if (!value) return 0;
+      var parsed = new Date(value + "T23:59:59.999").getTime();
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+    function purchaseItemNames(po) {
+      return String((po && (po.item_names || po.itemNames || po.items_text || po.itemsText)) || "");
+    }
+    function purchaseSearchText(po) {
+      return [
+        po && po.id,
+        po && (po.supplier_name || po.supplierName),
+        purchaseItemNames(po),
+        po && po.note
+      ].join(" ");
+    }
+    function updatePurchaseHistoryFilter(field, value) {
+      setPurchaseHistoryFilter(function (current) {
+        return Object.assign({}, current, { [field]: value });
+      });
+    }
+    function filteredPurchasesForHistory() {
+      var from = purchaseDateInputStart(purchaseHistoryFilter.from);
+      var to = purchaseDateInputEnd(purchaseHistoryFilter.to);
+      var query = normalizeSearchText(purchaseHistoryFilter.item);
+      var sorted = purchases.filter(function (po) {
+        var createdAt = purchaseCreatedAtValue(po);
+        if (from && createdAt && createdAt < from) return false;
+        if (to && createdAt && createdAt > to) return false;
+        if (query && normalizeSearchText(purchaseSearchText(po)).indexOf(query) === -1) return false;
+        return true;
+      }).slice();
+      sorted.sort(function (a, b) {
+        var mode = purchaseHistoryFilter.sort || "date_desc";
+        if (mode === "date_asc") {
+          return purchaseCreatedAtValue(a) - purchaseCreatedAtValue(b);
+        }
+        if (mode === "item_asc" || mode === "item_desc") {
+          var aName = normalizeSearchText(purchaseItemNames(a) || a.supplier_name || a.id);
+          var bName = normalizeSearchText(purchaseItemNames(b) || b.supplier_name || b.id);
+          var result = aName.localeCompare(bName);
+          return mode === "item_desc" ? -result : result;
+        }
+        return purchaseCreatedAtValue(b) - purchaseCreatedAtValue(a);
+      });
+      return sorted;
     }
     function viewPurchaseDetail(po) {
       if (!po || !po.id) return;
@@ -11486,6 +11589,7 @@
       var total = purchaseDraft.items.reduce(function (s, it) {
         return s + (Number(it.qty) || 0) * (Number(it.unitCost) || 0);
       }, 0);
+      var filteredPurchases = filteredPurchasesForHistory();
       return html`
         <section className="page-section">
           ${embedded ? null : html`<header className="page-header surface">
@@ -11709,17 +11813,69 @@
 
           <section className="surface section-card" style=${{ marginTop: 24 }}>
             <h2 className="section-title">${L("Lịch sử phiếu nhập / Purchase History")}</h2>
+            <div className="purchase-history-toolbar">
+              <label className="field">
+                <span>${L("Từ ngày / From")}</span>
+                <input
+                  type="date"
+                  value=${purchaseHistoryFilter.from}
+                  onInput=${function (e) { updatePurchaseHistoryFilter("from", e.target.value); }}
+                />
+              </label>
+              <label className="field">
+                <span>${L("Đến ngày / To")}</span>
+                <input
+                  type="date"
+                  value=${purchaseHistoryFilter.to}
+                  onInput=${function (e) { updatePurchaseHistoryFilter("to", e.target.value); }}
+                />
+              </label>
+              <label className="field purchase-history-search">
+                <span>${L("Tìm món, NCC, mã phiếu / Item, supplier, PO")}</span>
+                <input
+                  placeholder=${L("Ví dụ: dưa hấu, PN-2026... / Example: watermelon, PN-2026...")}
+                  value=${purchaseHistoryFilter.item}
+                  onInput=${function (e) { updatePurchaseHistoryFilter("item", e.target.value); }}
+                />
+              </label>
+              <label className="field">
+                <span>${L("Sắp xếp / Sort")}</span>
+                <select
+                  value=${purchaseHistoryFilter.sort}
+                  onChange=${function (e) { updatePurchaseHistoryFilter("sort", e.target.value); }}
+                >
+                  <option value="date_desc">${L("Ngày mới nhất / Newest")}</option>
+                  <option value="date_asc">${L("Ngày cũ nhất / Oldest")}</option>
+                  <option value="item_asc">${L("Tên món A-Z / Item A-Z")}</option>
+                  <option value="item_desc">${L("Tên món Z-A / Item Z-A")}</option>
+                </select>
+              </label>
+              <button
+                type="button"
+                className="ghost-btn purchase-history-clear"
+                onClick=${function () { setPurchaseHistoryFilter({ from: "", to: "", item: "", sort: "date_desc" }); }}
+              >
+                ${L("Xóa lọc / Clear")}
+              </button>
+            </div>
+            <p className="purchase-history-count">
+              ${filteredPurchases.length}/${purchases.length} ${L("phiếu phù hợp / matching documents")}
+            </p>
             <div className="management-list">
               ${purchases.length === 0
                 ? html`<p style=${{ color: "#7b6b5d" }}>${L("Chưa có phiếu nhập. / No purchases yet.")}</p>`
-                : purchases.map(function (po) {
+                : filteredPurchases.length === 0
+                  ? html`<p style=${{ color: "#7b6b5d" }}>${L("Không có phiếu nhập phù hợp bộ lọc. / No purchases match these filters.")}</p>`
+                  : filteredPurchases.map(function (po) {
                     var pendingVerify = isPurchasePendingVerification(po);
                     var statusLabel = purchaseStatusLabel(po);
+                    var itemNames = purchaseItemNames(po);
                     return html`
                       <article key=${po.id} className="list-row list-row-actions">
                         <div>
                           <strong>${po.id}</strong>
                           <p>${po.supplier_name || L("Không rõ NCC / Unknown supplier")} · ${po.item_count} ${L("dòng / lines")} · ${formatDateTime(po.created_at)}</p>
+                          ${itemNames ? html`<p className="purchase-item-names">${itemNames}</p>` : null}
                           <p>
                             <span className="stock-badge" style=${{
                               background: pendingVerify ? "#fff3d8" : "#e6f7ea",
@@ -12729,18 +12885,14 @@
 
           <div className="topbar-actions" style=${{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             ${currentUser ? html`
-              <div
-                className="lang-switch surface"
-                style=${{ display: "inline-flex", alignItems: "center", gap: 8, padding: "6px 10px" }}
-              >
-                <span style=${{ fontSize: 14 }}>👤</span>
-                <small style=${{ color: "#7b6b5d", fontWeight: "bold" }}>
+              <div className="user-session-pill surface">
+                <span className="user-session-icon">👤</span>
+                <small className="user-session-name">
                   ${currentUser.email.split("@")[0]} (${currentUser.role})
                 </small>
                 <button
                   type="button"
-                  className="ghost-btn"
-                  style=${{ padding: "2px 6px", fontSize: 11, marginLeft: 4, cursor: "pointer", background: "#fde2e0", color: "#c0392b", border: "1px solid #fde2e0", borderRadius: 4 }}
+                  className="logout-btn"
                   onClick=${handleLogout}
                 >
                   ${L("Đăng xuất / Logout")}

@@ -63,7 +63,7 @@ create index if not exists idx_products_sku on products(sku_code);
 
 create table if not exists inventory (
   product_id text primary key references products(id) on delete cascade,
-  qty_on_hand integer not null default 0,
+  qty_on_hand numeric not null default 0,
   location text not null default 'main',
   updated_at bigint not null
 );
@@ -72,7 +72,7 @@ create table if not exists stock_movements (
   id text primary key,
   product_id text not null references products(id) on delete cascade,
   movement_type text not null check (movement_type in ('IN','OUT','SALE','ADJUST','RETURN')),
-  qty_change integer not null,
+  qty_change numeric not null,
   unit_cost integer,
   ref_type text,
   ref_id text,
@@ -219,7 +219,7 @@ create table if not exists sales (
   payment_method text,
   cashier_name text,
   payment_status text not null default 'paid' check (payment_status in ('paid','pending','refunded')),
-  order_status text not null default 'completed' check (order_status in ('completed','cancelled','held')),
+  order_status text not null default 'completed' check (order_status in ('completed','cancelled','held','new','preparing','needs_action')),
   note text,
   created_at bigint not null
 );
@@ -233,7 +233,7 @@ create table if not exists sale_items (
   sale_id text not null references sales(id) on delete cascade,
   product_id text references products(id),
   product_name text not null,
-  qty integer not null,
+  qty numeric not null,
   unit_price integer not null,
   addons_json text,
   addons_total integer not null default 0,

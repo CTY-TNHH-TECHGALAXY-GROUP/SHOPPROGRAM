@@ -10,7 +10,7 @@
       href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="https://shopprogram.pages.dev/src/purchase-styles.css?v=5" />
+    <link rel="stylesheet" href="https://shopprogram.pages.dev/src/purchase-styles.css?v=6" />
   </head>
   <body>
     <main class="purchase-shell">
@@ -102,6 +102,30 @@
               <button id="refreshRequestsBtn" class="ghost-button" type="button">Tải lại</button>
             </div>
             <p class="soft-note">Chọn một đơn yêu cầu, nhập số lượng/khối lượng nhận thực tế và giá nhập. Có thể nhập nhiều hơn yêu cầu; POS chính sẽ xác nhận trước khi cộng kho.</p>
+            <div class="request-filter-toolbar" aria-label="Lọc và sắp xếp đơn yêu cầu">
+              <label>
+                Từ ngày
+                <input id="requestFromDate" type="date" />
+              </label>
+              <label>
+                Đến ngày
+                <input id="requestToDate" type="date" />
+              </label>
+              <label class="request-filter-search">
+                Tìm món hoặc mã đơn
+                <input id="requestItemFilter" type="search" placeholder="Ví dụ: bơ, vải, REQ..." autocomplete="off" />
+              </label>
+              <label>
+                Sắp xếp
+                <select id="requestSortMode">
+                  <option value="date_desc">Ngày mới nhất</option>
+                  <option value="date_asc">Ngày cũ nhất</option>
+                  <option value="item_asc">Tên món A-Z</option>
+                  <option value="item_desc">Tên món Z-A</option>
+                </select>
+              </label>
+              <button id="clearRequestFiltersBtn" class="ghost-button" type="button">Xóa lọc</button>
+            </div>
             <div id="requestSummaryList" class="request-list empty">Chưa có yêu cầu đang mở.</div>
 
             <div class="divider"></div>
@@ -206,6 +230,6 @@
     <script>
       window.SHOPFLOW_API_BASE = "https://shopprogram.pages.dev/api";
     </script>
-    <script src="https://shopprogram.pages.dev/src/purchase-app.js?v=10"></script>
+    <script src="https://shopprogram.pages.dev/src/purchase-app.js?v=11"></script>
   </body>
 </html>

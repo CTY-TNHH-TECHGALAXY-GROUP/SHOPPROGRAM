@@ -3,6 +3,7 @@ import {
   isDuplicateOp, recordOpStmt, runIdempotentBatch, nextDocId,
   inventoryDeltaStmt, movementStmt, getProductCost,
   ensureProductsInventoryModeColumn, ensureComponentsInventoryColumns,
+  ensureSalesStorageCompatibility,
   normalizePaymentMethod, normalizeStockQty,
 } from "../_lib.js";
 
@@ -41,6 +42,43 @@ function orderIdFromSaleId(saleId) {
   const match = String(saleId || "").match(/^HD-(\d{4})(\d{2})(\d{2})-(\d+)$/i);
   if (!match) return "";
   return `${match[3]}/${match[2]}/${match[1]}-${String(Number(match[4]) || 0).padStart(3, "0")}`;
+}
+
+function parseItemAddOns(item) {
+  if (!item || typeof item !== "object") return [];
+  const candidates = [
+    item.addons,
+    item.addOns,
+    item.addonsJson,
+    item.addons_json,
+    item.addOnIds,
+    item.add_on_ids,
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate == null || candidate === "") continue;
+    if (Array.isArray(candidate)) return candidate;
+    if (typeof candidate === "string") {
+      try {
+        const parsed = JSON.parse(candidate);
+        if (Array.isArray(parsed)) return parsed;
+      } catch (_) {
+        return candidate.split(",").map((id) => id.trim()).filter(Boolean);
+      }
+    }
+  }
+  return [];
+}
+
+function getItemAddOnIds(item) {
+  return parseItemAddOns(item)
+    .map((addon) => {
+      if (typeof addon === "string") return addon;
+      if (!addon || typeof addon !== "object") return "";
+      return addon.id || addon.addOnId || addon.addon_id || "";
+    })
+    .map((id) => String(id || "").trim())
+    .filter(Boolean);
 }
 
 // GET /api/sales?from=&to=&limit=
@@ -89,6 +127,7 @@ export const onRequestGet = async ({ env, request }) => {
 export const onRequestPost = async ({ env, request }) => {
   await ensureProductsInventoryModeColumn(env.DB);
   await ensureComponentsInventoryColumns(env.DB);
+  await ensureSalesStorageCompatibility(env.DB);
   const body = await readJson(request);
   if (!body || !Array.isArray(body.items) || !body.items.length) {
     return badRequest("items required");
@@ -144,6 +183,20 @@ export const onRequestPost = async ({ env, request }) => {
     const { results } = await env.DB.prepare(sql).bind(...productIds).all();
     if (results) {
       results.forEach((r) => productInfoMap.set(r.id, r));
+    }
+  }
+
+  const addOnIds = [...new Set(body.items.flatMap((it) => getItemAddOnIds(it)))];
+  const addOnInfoMap = new Map();
+  if (addOnIds.length > 0) {
+    const placeholders = addOnIds.map(() => "?").join(",");
+    const { results } = await env.DB.prepare(
+      `SELECT id, label, price, group_key
+       FROM add_ons
+       WHERE is_active = 1 AND id IN (${placeholders})`
+    ).bind(...addOnIds).all();
+    if (results) {
+      results.forEach((row) => addOnInfoMap.set(row.id, row));
     }
   }
 
@@ -253,8 +306,9 @@ export const onRequestPost = async ({ env, request }) => {
   }
 
   // -------- B2: Server-side recompute totals from items --------
-  // We do NOT trust the client-supplied unitPrice. We look up the authoritative price
-  // from our database for security, preventing clients from submitting tampered pricing.
+  // We do NOT trust client-supplied prices. Product prices and add-on prices
+  // are read from the database, then recomputed server-side so the checkout
+  // total matches the POS UI without allowing tampered prices.
   let serverSubtotal = 0;
   for (const it of body.items) {
     const qty = Number(it.qty) || 0;
@@ -262,10 +316,31 @@ export const onRequestPost = async ({ env, request }) => {
     if (!info) {
       return badRequest(`Unknown product: ${it.productId}`);
     }
-    const unitPrice = Number(info.price) || 0;
-    const lineTotal = Math.round(unitPrice * qty);
+    const requestedAddOnIds = getItemAddOnIds(it);
+    const addOns = [];
+    for (const addOnId of requestedAddOnIds) {
+      const addOn = addOnInfoMap.get(addOnId);
+      if (!addOn) {
+        return badRequest(`Unknown add-on: ${addOnId}`);
+      }
+      addOns.push({
+        id: addOn.id,
+        label: addOn.label || addOn.id,
+        price: Math.max(0, Math.round(Number(addOn.price) || 0)),
+        group: addOn.group_key || "extras",
+      });
+    }
+    const baseUnitPrice = Math.max(0, Math.round(Number(info.price) || 0));
+    const addonsTotal = addOns.reduce((sum, addOn) => sum + (Number(addOn.price) || 0), 0);
+    const lineTotal = Math.round((baseUnitPrice + addonsTotal) * qty);
     serverSubtotal += lineTotal;
-    it.unitPrice = unitPrice; // Enforce DB price
+    // Store base price separately from add-ons. Held orders are hydrated with
+    // addOnIds, so unit_price must remain the product base price to avoid
+    // double-counting add-ons after sync.
+    it.unitPrice = baseUnitPrice;
+    it.addonsTotal = addonsTotal;
+    it.addons = addOns;
+    it.addonsJson = addOns.length ? JSON.stringify(addOns) : null;
     it.__lineTotal = lineTotal;
   }
   const discount = Math.max(0, Math.round(Number(body.discount) || 0));
