@@ -307,6 +307,15 @@ export async function ensureComponentsInventoryColumns(db) {
 }
 
 export async function ensureSalesStorageCompatibility(db) {
+  if (!(await columnExists(db, "sales", "updated_at"))) {
+    await db.prepare(
+      db && db.__provider === "supabase"
+        ? `ALTER TABLE sales ADD COLUMN updated_at bigint NOT NULL DEFAULT 0`
+        : `ALTER TABLE sales ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0`
+    ).run();
+  }
+  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_sales_updated_at ON sales(updated_at)`).run();
+
   if (!db || db.__provider !== "supabase") return;
 
   // D1 tolerated integer-ish columns more loosely. Supabase/Postgres is strict,

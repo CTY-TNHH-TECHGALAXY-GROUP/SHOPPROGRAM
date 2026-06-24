@@ -171,9 +171,10 @@ CREATE TABLE IF NOT EXISTS sales (
   payment_method  TEXT,
   cashier_name    TEXT,
   payment_status  TEXT NOT NULL DEFAULT 'paid' CHECK (payment_status IN ('paid','pending','refunded')),
-  order_status    TEXT NOT NULL DEFAULT 'completed' CHECK (order_status IN ('completed','cancelled','held')),
+  order_status    TEXT NOT NULL DEFAULT 'completed' CHECK (order_status IN ('completed','cancelled','held','new','preparing','needs_action')),
   note            TEXT,
-  created_at      INTEGER NOT NULL
+  created_at      INTEGER NOT NULL,
+  updated_at      INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_sales_date ON sales(created_at);
 CREATE INDEX IF NOT EXISTS idx_sales_order ON sales(order_id);

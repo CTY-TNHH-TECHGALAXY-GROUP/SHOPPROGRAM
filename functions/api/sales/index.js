@@ -129,8 +129,48 @@ export const onRequestPost = async ({ env, request }) => {
   await ensureComponentsInventoryColumns(env.DB);
   await ensureSalesStorageCompatibility(env.DB);
   const body = await readJson(request);
-  if (!body || !Array.isArray(body.items) || !body.items.length) {
+  const requestedOrderStatus = String(body && (body.orderStatus || body.order_status) || "completed").toLowerCase();
+  const allowedOrderStatuses = new Set(["completed", "cancelled", "held", "new", "preparing", "needs_action"]);
+  const orderStatus = allowedOrderStatuses.has(requestedOrderStatus) ? requestedOrderStatus : "completed";
+  const isCompleted = orderStatus === "completed";
+  const isCancelled = orderStatus === "cancelled";
+
+  if (!body || !Array.isArray(body.items) || (!body.items.length && !isCancelled)) {
     return badRequest("items required");
+  }
+
+  if (isCancelled && (!body.items || !body.items.length)) {
+    const ts = now();
+    const requestedSaleId = String(body.id || "");
+    const requestedIdMatch = requestedSaleId.match(/^HD-(\d{8})-\d{3,}$/i);
+    const saleId = requestedIdMatch
+      ? requestedSaleId
+      : await nextDocId(env.DB, "HD", ts);
+    const canonicalOrderId = orderIdFromSaleId(saleId);
+    await env.DB.prepare(
+      `INSERT INTO sales
+         (id, order_id, customer_name, subtotal, vat_amount, discount, total,
+          paid, change_amount, payment_method, cashier_name,
+          payment_status, order_status, note, created_at, updated_at)
+       VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0, NULL, ?, 'pending', 'cancelled', ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         order_id = excluded.order_id,
+         customer_name = excluded.customer_name,
+         payment_status = excluded.payment_status,
+         order_status = excluded.order_status,
+         note = excluded.note,
+         updated_at = excluded.updated_at`
+    ).bind(
+      saleId,
+      canonicalOrderId || body.orderId || null,
+      body.customerName || null,
+      body.cashierName || null,
+      body.note || null,
+      ts,
+      ts
+    ).run();
+    await env.DB.prepare("DELETE FROM sale_items WHERE sale_id = ?").bind(saleId).run();
+    return json({ ok: true, id: saleId, orderId: canonicalOrderId || body.orderId || null, orderStatus: "cancelled" });
   }
 
   // -------- Item-level validation (E3, E6, E8) --------
@@ -248,9 +288,6 @@ export const onRequestPost = async ({ env, request }) => {
       qtyByProduct.set(it.productId, (qtyByProduct.get(it.productId) || 0) + qty);
     }
   }
-
-  const orderStatus = body.orderStatus || body.order_status || 'completed';
-  const isCompleted = orderStatus === 'completed';
 
   if (isCompleted && !body.allowNegativeStock) {
     const productChecks = await Promise.all(
@@ -396,7 +433,7 @@ export const onRequestPost = async ({ env, request }) => {
     paymentMethod = body.paymentMethod ? normalizePaymentMethod(body.paymentMethod) : null;
     paidAmount = Number.isFinite(Number(body.paid)) ? Math.max(0, Math.round(Number(body.paid))) : 0;
     paymentStatus = 'pending';
-    orderStatusDb = 'held';
+    orderStatusDb = isCancelled ? 'cancelled' : orderStatus;
   }
 
   const ts = now();
@@ -423,8 +460,8 @@ export const onRequestPost = async ({ env, request }) => {
       `INSERT INTO sales
          (id, order_id, customer_name, subtotal, vat_amount, discount, total,
           paid, change_amount, payment_method, cashier_name,
-          payment_status, order_status, note, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          payment_status, order_status, note, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          order_id = excluded.order_id,
          customer_name = excluded.customer_name,
@@ -438,7 +475,8 @@ export const onRequestPost = async ({ env, request }) => {
          cashier_name = excluded.cashier_name,
          payment_status = excluded.payment_status,
          order_status = excluded.order_status,
-         note = excluded.note`
+         note = excluded.note,
+         updated_at = excluded.updated_at`
     ).bind(
       saleId,
       canonicalOrderId || body.orderId || null,
@@ -454,6 +492,7 @@ export const onRequestPost = async ({ env, request }) => {
       paymentStatus,
       orderStatusDb,
       body.note || null,
+      ts,
       ts
     )
   );

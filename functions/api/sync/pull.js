@@ -3,6 +3,7 @@ import {
   ensureProductsInventoryModeColumn,
   ensureComponentsInventoryColumns,
   ensureProductionTables,
+  ensureSalesStorageCompatibility,
 } from "../_lib.js";
 
 // GET /api/sync/pull?since=<ts>
@@ -12,8 +13,12 @@ export const onRequestGet = async ({ env, request }) => {
   await ensureProductsInventoryModeColumn(env.DB);
   await ensureComponentsInventoryColumns(env.DB);
   await ensureProductionTables(env.DB);
+  await ensureSalesStorageCompatibility(env.DB);
   const url = new URL(request.url);
   const since = Number(url.searchParams.get("since")) || 0;
+  // Pull recent terminal rows even if they were completed before `updated_at`
+  // existed. This clears stale held/preparing cards on other devices.
+  const recentTerminalCutoff = Date.now() - (14 * 24 * 60 * 60 * 1000);
 
   const [categories, addOns, components, products, inventory, settings, recentSales, productionRecipes, productionBatches] =
     await Promise.all([
@@ -68,6 +73,7 @@ export const onRequestGet = async ({ env, request }) => {
            s.id, s.order_id, s.created_at, s.total, s.payment_method, s.customer_name,
            s.subtotal, s.vat_amount, s.discount, s.paid, s.change_amount,
            s.cashier_name, s.payment_status, s.order_status, s.note,
+           COALESCE(s.updated_at, s.created_at) AS updated_at,
            COALESCE((
              SELECT SUM(
                CASE
@@ -97,10 +103,12 @@ export const onRequestGet = async ({ env, request }) => {
              LEFT JOIN products pi ON pi.id = si.product_id
              WHERE si.sale_id = s.id
            ) as items_json
-         FROM sales s 
-         WHERE s.order_status = 'held' OR s.created_at > ? 
+         FROM sales s
+         WHERE s.order_status IN ('new', 'held', 'preparing', 'needs_action')
+            OR COALESCE(s.updated_at, s.created_at) > ?
+            OR (s.order_status IN ('completed', 'cancelled') AND s.created_at > ?)
          ORDER BY s.created_at DESC LIMIT 1000`
-      ).bind(since).all(),
+      ).bind(since, recentTerminalCutoff).all(),
 
       env.DB.prepare(
         `SELECT id, name, output_component_id, planned_output_qty, output_unit,

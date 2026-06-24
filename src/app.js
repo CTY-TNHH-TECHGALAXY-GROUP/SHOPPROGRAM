@@ -1518,7 +1518,8 @@
       paymentMethod: normalizePaymentMethod(baseOrder.paymentMethod),
       cashReceived: Number(baseOrder.cashReceived) || 0,
       orderNumberSource: baseOrder.orderNumberSource || baseOrder.order_number_source || "local",
-      reservedSaleId: baseOrder.reservedSaleId || baseOrder.reserved_sale_id || ""
+      reservedSaleId: baseOrder.reservedSaleId || baseOrder.reserved_sale_id || "",
+      updatedAt: Number(baseOrder.updatedAt || baseOrder.updated_at) || Number(baseOrder.createdAt || baseOrder.created_at) || Date.now()
     };
   }
 
@@ -3142,7 +3143,7 @@
       if (!window.ShopFlowSync) return undefined;
 
       function handlePulled(data) {
-        function mapHeldSaleToOrder(row) {
+        function mapOpenSaleToOrder(row) {
           var items = [];
           if (row.items_json) {
             try {
@@ -3184,6 +3185,12 @@
             else if (parsedStatus === "needs_action") status = "needs_action";
             else if (parsedStatus === "ready") status = "ready";
           }
+          if (!match) {
+            if (row.order_status === "preparing") status = "preparing";
+            else if (row.order_status === "held") status = "held";
+            else if (row.order_status === "needs_action") status = "needs_action";
+            else status = "open";
+          }
           var cleanedNote = note.replace(/^\[status:[a-zA-Z0-9_-]+\]\s*/, "");
           
           return {
@@ -3200,7 +3207,8 @@
             cashReceived: Number(row.paid) || 0,
             orderNumberSource: "server",
             reservedSaleId: row.id,
-            note: cleanedNote
+            note: cleanedNote,
+            updatedAt: Number(row.updated_at || row.created_at) || Date.now()
           };
         }
 
@@ -3404,6 +3412,14 @@
         }
 
         if (Array.isArray(data.recentSales) && data.recentSales.length) {
+          var cancelledSaleIdsForDashboard = new Set();
+          var cancelledOrderIdsForDashboard = new Set();
+          data.recentSales.forEach(function (row) {
+            if (row.order_status !== "cancelled") return;
+            cancelledSaleIdsForDashboard.add(row.id);
+            if (row.order_id) cancelledOrderIdsForDashboard.add(row.order_id);
+          });
+
           setSales(function (current) {
             var byId = {};
             current.forEach(function (s) {
@@ -3460,21 +3476,26 @@
               }));
             });
             var merged = Object.keys(byId).map(function (id) { return byId[id]; }).filter(function (sale) {
+              if (cancelledSaleIdsForDashboard.has(sale.id)) return false;
+              if (cancelledOrderIdsForDashboard.has(sale.orderId)) return false;
               return !isKnownTechnicalTestSale(sale);
             });
             merged.sort(function (a, b) { return b.createdAt - a.createdAt; });
             return merged.slice(0, 1000); // Keep last 1000 sales
           });
 
-          // ----- Sync Open/Held Orders -----
-          var heldSales = data.recentSales.filter(function (row) { return row.order_status === "held"; });
-          var nonHeldSales = data.recentSales.filter(function (row) { return row.order_status === "completed" || row.order_status === "cancelled"; });
+          // ----- Sync Open Orders across devices -----
+          var openSaleStatuses = new Set(["new", "held", "preparing", "needs_action"]);
+          var openSales = data.recentSales.filter(function (row) { return openSaleStatuses.has(row.order_status); });
+          var nonOpenSales = data.recentSales.filter(function (row) {
+            return row.order_status === "completed" || row.order_status === "cancelled";
+          });
 
-          var pulledOpenOrders = heldSales.map(mapHeldSaleToOrder);
+          var pulledOpenOrders = openSales.map(mapOpenSaleToOrder);
 
           var completedOrCancelledSaleIds = new Set();
           var completedOrCancelledOrderIds = new Set();
-          nonHeldSales.forEach(function (row) {
+          nonOpenSales.forEach(function (row) {
             completedOrCancelledSaleIds.add(row.id);
             if (row.order_id) completedOrCancelledOrderIds.add(row.order_id);
           });
@@ -3495,7 +3516,8 @@
                 var existing = updatedOrders[existingIdx];
                 var localStateStr = JSON.stringify(existing);
                 var lastSyncedStr = lastSyncedOrderStatesRef.current[existing.id] || "";
-                if (localStateStr === lastSyncedStr) {
+                var serverIsNewer = (Number(pulled.updatedAt) || 0) > (Number(existing.updatedAt) || 0);
+                if (localStateStr === lastSyncedStr || serverIsNewer) {
                   updatedOrders[existingIdx] = pulled;
                   lastSyncedOrderStatesRef.current[pulled.id] = JSON.stringify(pulled);
                 }
@@ -4290,6 +4312,9 @@
           }
 
           var nextOrder = updater(order);
+          if (nextOrder) {
+            nextOrder = Object.assign({}, nextOrder, { updatedAt: Date.now() });
+          }
           if (order.status === "needs_action" && nextOrder && nextOrder.status === "needs_action") {
             return nextOrder;
           }
@@ -4297,7 +4322,8 @@
             return Object.assign({}, nextOrder, {
               status: "open",
               syncError: "",
-              syncRetryCount: 0
+              syncRetryCount: 0,
+              updatedAt: Date.now()
             });
           }
           return nextOrder;
