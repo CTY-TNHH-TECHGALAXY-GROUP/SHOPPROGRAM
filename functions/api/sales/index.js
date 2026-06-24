@@ -124,11 +124,63 @@ export const onRequestGet = async ({ env, request }) => {
 //               addons: [...] | addonsJson, addonsTotal, lineTotal }]
 //   }
 // Atomic: sales + sale_items + stock_movements (SALE) + inventory delta.
-export const onRequestPost = async ({ env, request }) => {
+export const onRequestPost = async ({ env, request, data }) => {
   await ensureProductsInventoryModeColumn(env.DB);
   await ensureComponentsInventoryColumns(env.DB);
   await ensureSalesStorageCompatibility(env.DB);
   const body = await readJson(request);
+
+  if (body && body.repairStatusOnly) {
+    if (!data || !data.user || data.user.role !== "admin") {
+      return json({ ok: false, error: "admin required" }, { status: 403 });
+    }
+    const saleId = String(body.id || "");
+    if (!/^HD-\d{8}-\d{3,}$/i.test(saleId)) {
+      return badRequest("valid sale id required");
+    }
+    const existing = await env.DB.prepare(
+      `SELECT id, order_id, total, paid, payment_method, note
+       FROM sales
+       WHERE id = ?`
+    ).bind(saleId).first();
+    if (!existing) {
+      return badRequest("sale not found");
+    }
+    const ts = now();
+    const total = Math.max(0, Math.round(Number(existing.total) || 0));
+    const paidAmount = Number.isFinite(Number(body.paid))
+      ? Math.max(0, Math.round(Number(body.paid)))
+      : total;
+    const paymentMethod = normalizePaymentMethod(body.paymentMethod || existing.payment_method || "other") || "other";
+    await env.DB.prepare(
+      `UPDATE sales
+       SET paid = ?,
+           change_amount = ?,
+           payment_method = ?,
+           payment_status = 'paid',
+           order_status = 'completed',
+           note = COALESCE(?, note),
+           updated_at = ?
+       WHERE id = ?`
+    ).bind(
+      paidAmount,
+      Math.max(0, paidAmount - total),
+      paymentMethod,
+      body.note === undefined ? null : body.note,
+      ts,
+      saleId
+    ).run();
+    return json({
+      ok: true,
+      id: saleId,
+      orderId: existing.order_id || orderIdFromSaleId(saleId),
+      repaired: true,
+      orderStatus: "completed",
+      paymentStatus: "paid",
+      paid: paidAmount,
+    });
+  }
+
   const requestedOrderStatus = String(body && (body.orderStatus || body.order_status) || "completed").toLowerCase();
   const allowedOrderStatuses = new Set(["completed", "cancelled", "held", "new", "preparing", "needs_action"]);
   const orderStatus = allowedOrderStatuses.has(requestedOrderStatus) ? requestedOrderStatus : "completed";
