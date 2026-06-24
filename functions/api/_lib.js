@@ -314,6 +314,13 @@ export async function ensureSalesStorageCompatibility(db) {
         : `ALTER TABLE sales ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0`
     ).run();
   }
+  if (!(await columnExists(db, "sale_items", "discount_amount"))) {
+    await db.prepare(
+      db && db.__provider === "supabase"
+        ? `ALTER TABLE sale_items ADD COLUMN discount_amount integer NOT NULL DEFAULT 0`
+        : `ALTER TABLE sale_items ADD COLUMN discount_amount INTEGER NOT NULL DEFAULT 0`
+    ).run();
+  }
   await db.prepare(`CREATE INDEX IF NOT EXISTS idx_sales_updated_at ON sales(updated_at)`).run();
 
   if (!db || db.__provider !== "supabase") return;

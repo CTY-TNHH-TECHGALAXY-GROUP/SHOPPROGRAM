@@ -379,6 +379,10 @@ export const onRequestPost = async ({ env, request }) => {
     it.addons = addOns;
     it.addonsJson = addOns.length ? JSON.stringify(addOns) : null;
     it.__lineTotal = lineTotal;
+    it.__discountAmount = Math.min(
+      lineTotal,
+      Math.max(0, Math.round(Number(it.discountAmount || it.discount_amount) || 0))
+    );
   }
   const discount = Math.max(0, Math.round(Number(body.discount) || 0));
   const VAT_RATE = Number.isFinite(Number(body.vatRate)) ? Number(body.vatRate) : 0.08;
@@ -509,8 +513,8 @@ export const onRequestPost = async ({ env, request }) => {
       env.DB.prepare(
         `INSERT INTO sale_items
            (id, sale_id, product_id, product_name, qty, unit_price,
-            addons_json, addons_total, line_total, unit_cost)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            addons_json, addons_total, line_total, discount_amount, unit_cost)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).bind(
         uid("si"),
         saleId,
@@ -522,6 +526,7 @@ export const onRequestPost = async ({ env, request }) => {
         Number(it.addonsTotal) || 0,
         // B2: server-recomputed line total
         Number(it.__lineTotal) || (Number(it.unitPrice) || 0) * qty,
+        Number(it.__discountAmount) || 0,
         it.unitCost || 0
       )
     );

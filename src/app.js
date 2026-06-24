@@ -3167,6 +3167,8 @@
                     price: Number(it.price || it.unit_price) || 0,
                     unit: it.unit || "",
                     addOnIds: addOnIds,
+                    discountType: Number(it.discountAmount || it.discount_amount) ? "amount" : "percent",
+                    discountValue: Number(it.discountAmount || it.discount_amount) || 0,
                     note: it.note || ""
                   };
                 });
@@ -3445,6 +3447,7 @@
                         unit: it.unit || "",
                         addonsJson: it.addonsJson || it.addons_json,
                         addonsTotal: Number(it.addonsTotal || it.addons_total) || 0,
+                        discountAmount: Number(it.discountAmount || it.discount_amount) || 0,
                         lineTotal: Number(it.lineTotal || it.line_total) || 0
                       };
                     });
@@ -5711,7 +5714,9 @@
                     : item.unitPrice != null
                       ? Number(item.unitPrice) || 0
                       : (Number(item.price) || 0) + addonsTotal;
-                  var lineTotal = Number(item.line_total || item.lineTotal) || (qty * unitPrice);
+                  var lineGross = Number(item.line_total || item.lineTotal) || (qty * unitPrice);
+                  var lineDiscount = Number(item.discount_amount || item.discountAmount) || 0;
+                  var lineTotal = Math.max(0, lineGross - lineDiscount);
                   return html`
                     <article key=${item.id || index} className="completed-sale-item">
                       <div>
@@ -5722,7 +5727,11 @@
                       </div>
                       <div className="completed-sale-item-metric"><span>${L("SL / Qty")}</span><strong>${formatQuantity(qty, 3)}${item.unit ? " " + item.unit : ""}</strong></div>
                       <div className="completed-sale-item-metric"><span>${L("Đơn giá / Unit Price")}</span><strong>${formatCurrency(unitPrice)}</strong></div>
-                      <div className="completed-sale-item-metric"><span>${L("Thành tiền / Amount")}</span><strong>${formatCurrency(lineTotal)}</strong></div>
+                      <div className=${"completed-sale-item-metric" + (lineDiscount ? " has-discount" : "")}>
+                        <span>${L("Thành tiền / Amount")}</span>
+                        ${lineDiscount ? html`<del>${formatCurrency(lineGross)}</del>` : null}
+                        <strong>${formatCurrency(lineTotal)}</strong>
+                      </div>
                     </article>
                   `;
                 }) : html`<div className="empty-state align-left">${L("Hóa đơn chưa có chi tiết món. / No item detail is available.")}</div>`}
@@ -6197,7 +6206,9 @@
           var addOnTotal = getItemAddonTotal(item, addOns);
           var unitPrice = (Number(item.price) || 0) + addOnTotal;
           var lineSubtotal = unitPrice * (Number(item.qty) || 0);
-          var lineVat = lineSubtotal * VAT_RATE;
+          var itemDiscountAmount = getItemDiscountAmount(item, addOns);
+          var lineNet = Math.max(0, lineSubtotal - itemDiscountAmount);
+          var lineVat = lineNet * VAT_RATE;
           return {
             order_item_id: item.id || record.orderId + "-item-" + padNumber(index + 1, 3),
             order_id: record.orderId,
@@ -6206,10 +6217,10 @@
             product_name: item.name || product.name || "",
             qty: Number(item.qty) || 0,
             unit_price: unitPrice,
-            discount_amount: 0,
+            discount_amount: itemDiscountAmount,
             vat_rate: VAT_RATE,
             vat_amount: lineVat,
-            line_total: lineSubtotal + lineVat,
+            line_total: lineNet + lineVat,
             created_at: formatExportDateTime(record.createdAt)
           };
         }));
@@ -8969,6 +8980,7 @@
                     var itemDiscountType = item.discountType === "amount" ? "amount" : "percent";
                     var itemDiscountValue = Number(item.discountValue) || 0;
                     var itemDiscount = getItemDiscountAmount(item, addOns);
+                    var itemGrossTotal = getItemLineGross(item, addOns);
                     var itemNetTotal = getItemLineNet(item, addOns);
                     return html`
                       <article key=${item.id} className="order-item">
@@ -8976,6 +8988,13 @@
                           <div>
                             <h3>${item.name}</h3>
                             <p>${formatCurrency(item.price)} · ${L("mỗi món / per item")}</p>
+                            ${itemDiscount ? html`
+                              <div className="order-item-discount-price">
+                                <span>${L("Sau giảm / Discounted")}</span>
+                                <del>${formatCurrency(itemGrossTotal)}</del>
+                                <strong>${formatCurrency(itemNetTotal)}</strong>
+                              </div>
+                            ` : null}
                           </div>
                           <button className="ghost-btn danger-text" onClick=${function () {
                             removeItem(item.id);
@@ -9027,7 +9046,12 @@
                           <button className="qty-btn" onClick=${function () {
                             adjustItemQty(item.id, 1);
                           }}>+</button>
-                          <span className="line-total">${formatCurrency(itemNetTotal)}</span>
+                          <span className=${"line-total" + (itemDiscount ? " has-discount" : "")}>
+                            ${itemDiscount ? html`
+                              <del>${formatCurrency(itemGrossTotal)}</del>
+                              <strong>${formatCurrency(itemNetTotal)}</strong>
+                            ` : formatCurrency(itemNetTotal)}
+                          </span>
                         </div>
 
                         <div className="item-discount-row">

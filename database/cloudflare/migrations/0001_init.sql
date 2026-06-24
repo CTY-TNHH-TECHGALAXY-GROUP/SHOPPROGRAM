@@ -189,6 +189,7 @@ CREATE TABLE IF NOT EXISTS sale_items (
   addons_json   TEXT,                            -- JSON array of addon ids/labels/prices
   addons_total  INTEGER NOT NULL DEFAULT 0,
   line_total    INTEGER NOT NULL,
+  discount_amount INTEGER NOT NULL DEFAULT 0,
   unit_cost     INTEGER                          -- cost snapshot for gross-profit
 );
 CREATE INDEX IF NOT EXISTS idx_sale_items_sale    ON sale_items(sale_id);

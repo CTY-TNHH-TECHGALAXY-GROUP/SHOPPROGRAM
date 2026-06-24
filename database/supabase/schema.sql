@@ -239,6 +239,7 @@ create table if not exists sale_items (
   addons_json text,
   addons_total integer not null default 0,
   line_total integer not null,
+  discount_amount integer not null default 0,
   unit_cost integer
 );
 create index if not exists idx_sale_items_sale on sale_items(sale_id);

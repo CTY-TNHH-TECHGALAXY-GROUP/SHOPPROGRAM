@@ -96,6 +96,7 @@ export const onRequestGet = async ({ env, request }) => {
                  'unit', COALESCE(pi.unit, ''),
                  'addonsJson', si.addons_json,
                  'addonsTotal', si.addons_total,
+                 'discountAmount', COALESCE(si.discount_amount, 0),
                  'lineTotal', si.line_total
                )
              )

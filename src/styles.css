@@ -1250,6 +1250,37 @@ textarea:focus {
   flex-shrink: 0;
 }
 
+.line-total.has-discount,
+.order-item-discount-price {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.line-total del,
+.order-item-discount-price del,
+.completed-sale-item-metric del {
+  color: var(--muted);
+  font-weight: 700;
+  text-decoration-thickness: 2px;
+}
+
+.line-total.has-discount strong,
+.order-item-discount-price strong,
+.completed-sale-item-metric.has-discount strong {
+  color: var(--brand);
+}
+
+.order-item-discount-price {
+  justify-content: flex-start;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
 .item-discount-row {
   display: grid;
   grid-template-columns: minmax(88px, 1fr) auto minmax(76px, 0.65fr) auto;
