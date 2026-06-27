@@ -1,4 +1,5 @@
-name = "shopprogram"
+"# wrangler.toml
+name = 'oriafarm-purchase'"
 compatibility_date = "2026-05-18"
 pages_build_output_dir = "."
 
