@@ -1,6 +1,6 @@
 CREATE TABLE categories (
   id          TEXT PRIMARY KEY,
-  label       TEXT NOT NULL,           -- bilingual "VI / EN"
+  label       TEXT NOT NULL,           
   icon        TEXT,
   sort_order  INTEGER DEFAULT 0,
   is_active   INTEGER NOT NULL DEFAULT 1,
@@ -10,7 +10,7 @@ CREATE TABLE add_ons (
   id          TEXT PRIMARY KEY,
   label       TEXT NOT NULL,
   price       INTEGER NOT NULL DEFAULT 0,
-  group_key   TEXT NOT NULL,           -- 'sweetness' | 'ice' | 'extras'
+  group_key   TEXT NOT NULL,           
   is_active   INTEGER NOT NULL DEFAULT 1,
   updated_at  INTEGER NOT NULL
 );
@@ -26,11 +26,11 @@ CREATE TABLE products (
   name          TEXT NOT NULL,
   category_id   TEXT REFERENCES categories(id) ON DELETE SET NULL,
   price         INTEGER NOT NULL DEFAULT 0,
-  cost_price    INTEGER NOT NULL DEFAULT 0,   -- weighted-average cost
+  cost_price    INTEGER NOT NULL DEFAULT 0,   
   barcode       TEXT,
   image         TEXT,
   description   TEXT,
-  component_ids TEXT,                          -- JSON array
+  component_ids TEXT,                          
   min_stock     INTEGER NOT NULL DEFAULT 0,
   is_active     INTEGER NOT NULL DEFAULT 1,
   updated_at    INTEGER NOT NULL
@@ -47,10 +47,10 @@ CREATE TABLE stock_movements (
   id             TEXT PRIMARY KEY,
   product_id     TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
   movement_type  TEXT NOT NULL CHECK (movement_type IN ('IN','OUT','SALE','ADJUST','RETURN')),
-  qty_change     INTEGER NOT NULL,        -- positive for IN/RETURN, negative for OUT/SALE; ADJUST may be either
-  unit_cost      INTEGER,                 -- captured cost (for IN, or snapshot at OUT/SALE)
-  ref_type       TEXT,                    -- 'purchase' | 'issue' | 'sale' | 'manual'
-  ref_id         TEXT,                    -- PN-... / PX-... / HD-... / NULL
+  qty_change     INTEGER NOT NULL,        
+  unit_cost      INTEGER,                 
+  ref_type       TEXT,                    
+  ref_id         TEXT,                    
   note           TEXT,
   created_at     INTEGER NOT NULL
 );
@@ -67,9 +67,9 @@ CREATE TABLE suppliers (
   updated_at INTEGER NOT NULL
 );
 CREATE TABLE purchase_orders (
-  id              TEXT PRIMARY KEY,             -- 'PN-YYYYMMDD-NNN'
+  id              TEXT PRIMARY KEY,             
   supplier_id     TEXT REFERENCES suppliers(id) ON DELETE SET NULL,
-  supplier_name   TEXT,                          -- denormalized for fast list
+  supplier_name   TEXT,                          
   total_amount    INTEGER NOT NULL DEFAULT 0,
   paid_amount     INTEGER NOT NULL DEFAULT 0,
   payment_method  TEXT,
@@ -90,7 +90,7 @@ CREATE TABLE purchase_order_items (
 CREATE INDEX idx_po_items_purchase ON purchase_order_items(purchase_id);
 CREATE INDEX idx_po_items_product  ON purchase_order_items(product_id);
 CREATE TABLE stock_issues (
-  id          TEXT PRIMARY KEY,                 -- 'PX-YYYYMMDD-NNN'
+  id          TEXT PRIMARY KEY,                 
   reason      TEXT NOT NULL CHECK (reason IN ('damaged','sample','internal','transfer','other')),
   note        TEXT,
   status      TEXT NOT NULL DEFAULT 'completed' CHECK (status IN ('draft','completed','cancelled')),
@@ -103,19 +103,19 @@ CREATE TABLE stock_issue_items (
   product_id    TEXT NOT NULL REFERENCES products(id),
   product_name  TEXT,
   qty           INTEGER NOT NULL,
-  unit_cost     INTEGER                          -- cost snapshot at issue time (for valuation)
+  unit_cost     INTEGER                          
 , item_type TEXT NOT NULL DEFAULT 'product', component_id TEXT);
 CREATE INDEX idx_issue_items_issue   ON stock_issue_items(issue_id);
 CREATE INDEX idx_issue_items_product ON stock_issue_items(product_id);
 CREATE TABLE sales (
-  id              TEXT PRIMARY KEY,             -- 'HD-YYYYMMDD-NNN' or legacy
-  order_id        TEXT,                          -- POS order id (DD/MM/YYYY-NNN)
+  id              TEXT PRIMARY KEY,             
+  order_id        TEXT,                          
   customer_name   TEXT,
   subtotal        INTEGER NOT NULL DEFAULT 0,
   vat_amount      INTEGER NOT NULL DEFAULT 0,
   discount        INTEGER NOT NULL DEFAULT 0,
   total           INTEGER NOT NULL DEFAULT 0,
-  paid            INTEGER NOT NULL DEFAULT 0,   -- cash received
+  paid            INTEGER NOT NULL DEFAULT 0,   
   change_amount   INTEGER NOT NULL DEFAULT 0,
   payment_method  TEXT,
   cashier_name    TEXT,
@@ -133,28 +133,28 @@ CREATE TABLE sale_items (
   product_name  TEXT NOT NULL,
   qty           INTEGER NOT NULL,
   unit_price    INTEGER NOT NULL,
-  addons_json   TEXT,                            -- JSON array of addon ids/labels/prices
+  addons_json   TEXT,                            
   addons_total  INTEGER NOT NULL DEFAULT 0,
   line_total    INTEGER NOT NULL,
-  unit_cost     INTEGER                          -- cost snapshot for gross-profit
+  unit_cost     INTEGER                          
 );
 CREATE INDEX idx_sale_items_sale    ON sale_items(sale_id);
 CREATE INDEX idx_sale_items_product ON sale_items(product_id);
 CREATE TABLE settings (
   key        TEXT PRIMARY KEY,
-  value      TEXT NOT NULL,                      -- JSON
+  value      TEXT NOT NULL,                      
   updated_at INTEGER NOT NULL
 );
 CREATE TABLE sync_log (
   client_op_id TEXT PRIMARY KEY,
-  op_type      TEXT,                              -- 'sale' | 'purchase' | 'issue' | 'product' | ...
-  ref_id       TEXT,                              -- resulting server id (sale id, purchase id, ...)
+  op_type      TEXT,                              
+  ref_id       TEXT,                              
   applied_at   INTEGER NOT NULL
 );
 CREATE INDEX idx_sync_log_time ON sync_log(applied_at);
 CREATE TABLE doc_sequences (
-  prefix      TEXT NOT NULL,                     -- 'PN' | 'PX' | 'HD'
-  date_key    TEXT NOT NULL,                     -- 'YYYYMMDD'
+  prefix      TEXT NOT NULL,                     
+  date_key    TEXT NOT NULL,                     
   last_number INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (prefix, date_key)
 );
@@ -224,7 +224,7 @@ CREATE TABLE users (
   id            TEXT PRIMARY KEY,
   email         TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
-  role          TEXT NOT NULL,           -- admin, manager, cashier, inventory, accountant
+  role          TEXT NOT NULL,           
   full_name     TEXT,
   is_active     INTEGER NOT NULL DEFAULT 1,
   created_at    INTEGER NOT NULL,
