@@ -14,6 +14,12 @@ export const VERIFICATION_VERIFIED = "verified";
 export const VERIFICATION_NEEDS_REVISION = "needs_revision";
 export const VERIFICATION_REJECTED = "rejected";
 
+let purchaseSchemaBootstrapped = false;
+
+function isSupabaseAdapter(db) {
+  return db && db.__provider === "supabase";
+}
+
 async function columnExists(db, tableName, columnName) {
   const { results } = await db.prepare(`PRAGMA table_info(${tableName})`).all();
   return (results || []).some((column) => column.name === columnName);
@@ -25,6 +31,15 @@ async function addColumnIfMissing(db, tableName, columnName, definition) {
 }
 
 export async function ensurePurchaseTables(db) {
+  if (purchaseSchemaBootstrapped) return;
+
+  if (isSupabaseAdapter(db)) {
+    // Supabase schema is migration-managed. Re-running DDL/PRAGMA on every
+    // purchase request creates many Cloudflare subrequests and can block large saves.
+    purchaseSchemaBootstrapped = true;
+    return;
+  }
+
   await ensureProductsInventoryModeColumn(db);
   await ensureComponentsInventoryColumns(db);
   await db.prepare(
@@ -82,6 +97,7 @@ export async function ensurePurchaseTables(db) {
   await addColumnIfMissing(db, "purchase_component_items", "purchase_qty", "REAL");
   await addColumnIfMissing(db, "purchase_component_items", "purchase_unit", "TEXT");
   await addColumnIfMissing(db, "purchase_component_items", "purchase_unit_cost", "INTEGER");
+  purchaseSchemaBootstrapped = true;
 }
 
 function normalizeUnit(value) {
