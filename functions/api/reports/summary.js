@@ -1,5 +1,13 @@
 import { json } from "../_lib.js";
 
+const SHOP_TZ_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+function shopDateKey(timestamp) {
+  const date = new Date((Number(timestamp) || 0) + SHOP_TZ_OFFSET_MS);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toISOString().slice(0, 10);
+}
+
 // GET /api/reports/summary?from=&to=
 // Returns revenue, gross profit, order count, top products,
 // and a per-day revenue breakdown for charting.
@@ -40,16 +48,23 @@ export const onRequestGet = async ({ env, request }) => {
      LIMIT 10`
   ).bind(from, to).all();
 
-  const { results: byDay } = await env.DB.prepare(
-    `SELECT strftime('%Y-%m-%d', created_at/1000, 'unixepoch') AS day,
-            COUNT(*) AS orders,
-            COALESCE(SUM(total), 0) AS revenue
+  const { results: dayRows } = await env.DB.prepare(
+    `SELECT created_at, total
      FROM sales
      WHERE created_at BETWEEN ? AND ?
        AND order_status = 'completed'
-     GROUP BY day
-     ORDER BY day`
+     ORDER BY created_at`
   ).bind(from, to).all();
+  const byDayMap = new Map();
+  for (const row of dayRows || []) {
+    const day = shopDateKey(row.created_at);
+    if (!day) continue;
+    const current = byDayMap.get(day) || { day, orders: 0, revenue: 0 };
+    current.orders += 1;
+    current.revenue += Number(row.total) || 0;
+    byDayMap.set(day, current);
+  }
+  const byDay = Array.from(byDayMap.values()).sort((a, b) => a.day.localeCompare(b.day));
 
   const { results: byPaymentMethod } = await env.DB.prepare(
     `SELECT payment_method,
@@ -90,7 +105,7 @@ export const onRequestGet = async ({ env, request }) => {
       cogs:        Number(profit.cogs)         || 0,
     },
     topProducts: topProducts || [],
-    byDay: byDay || [],
+    byDay,
     byPaymentMethod: byPaymentMethod || [],
   });
 };
