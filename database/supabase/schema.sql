@@ -219,7 +219,7 @@ create table if not exists sales (
   payment_method text,
   cashier_name text,
   payment_status text not null default 'paid' check (payment_status in ('paid','pending','refunded')),
-  order_status text not null default 'completed' check (order_status in ('completed','cancelled','held','new','preparing','needs_action')),
+  order_status text not null default 'completed' check (order_status in ('completed','cancelled','held','new','preparing','ready','needs_action')),
   note text,
   created_at bigint not null,
   updated_at bigint not null default 0

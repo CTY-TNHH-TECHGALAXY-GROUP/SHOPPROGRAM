@@ -86,7 +86,8 @@ export const onRequestGet = async ({ env, request }) => {
   const url = new URL(request.url);
   const from = Number(url.searchParams.get("from"));
   const to = Number(url.searchParams.get("to"));
-  const limit = Math.min(Number(url.searchParams.get("limit")) || 100, 20000);
+  const all = url.searchParams.get("all") === "1";
+  const limit = all ? 100000 : Math.min(Number(url.searchParams.get("limit")) || 100, 20000);
   const where = [];
   const binds = [];
   if (from) { where.push("created_at >= ?"); binds.push(from); }
@@ -189,10 +190,18 @@ export const onRequestPost = async ({ env, request, data }) => {
   }
 
   const requestedOrderStatus = String(body && (body.orderStatus || body.order_status) || "completed").toLowerCase();
-  const allowedOrderStatuses = new Set(["completed", "cancelled", "held", "new", "preparing", "needs_action"]);
+  const allowedOrderStatuses = new Set(["completed", "cancelled", "held", "new", "preparing", "ready", "needs_action"]);
   const orderStatus = allowedOrderStatuses.has(requestedOrderStatus) ? requestedOrderStatus : "completed";
   const isCompleted = orderStatus === "completed";
   const isCancelled = orderStatus === "cancelled";
+
+  if (data && data.user && data.user.role === "kiosk" && orderStatus !== "new") {
+    return json({
+      ok: false,
+      error: "Kiosk can only create new orders",
+      code: "KIOSK_ORDER_STATUS_ONLY",
+    }, { status: 403 });
+  }
 
   if (!body || !Array.isArray(body.items) || (!body.items.length && !isCancelled)) {
     return badRequest("items required");

@@ -4,7 +4,7 @@ import { verifyToken, getCookie } from "./_lib.js";
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Op-Id",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Op-Id, X-Shopflow-Public-Kiosk",
   "Access-Control-Max-Age": "86400",
   "Access-Control-Allow-Credentials": "true",
 };
@@ -39,6 +39,8 @@ function corsHeadersForRequest(request) {
 function isAuthorized(role, path, method) {
   if (role === "admin") return true;
 
+  if (path.startsWith("/api/admin/")) return false;
+
   // Auth and health endpoints are always public
   if (path.startsWith("/api/auth/") || path === "/api/health") {
     return true;
@@ -47,8 +49,34 @@ function isAuthorized(role, path, method) {
   // Cashier:
   // - Allowed: POS checkout, sync, and listing catalogues.
   if (role === "cashier") {
+    if (path === "/api/audit" && method === "POST") return true;
     if (path.startsWith("/api/sales") && (method === "POST" || method === "GET")) return true;
     if (path.startsWith("/api/orders") && (method === "POST" || method === "GET")) return true;
+    if (path === "/api/products" && method === "GET") return true;
+    if (path.startsWith("/api/categories") && method === "GET") return true;
+    if (path.startsWith("/api/addons") && method === "GET") return true;
+    if (path.startsWith("/api/sync/pull") && method === "GET") return true;
+    return false;
+  }
+
+  // Barista:
+  // - Allowed: see synced prep queue and mark prepared orders as ready.
+  if (role === "barista") {
+    if (path === "/api/audit" && method === "POST") return true;
+    if (path.startsWith("/api/sales") && (method === "POST" || method === "GET")) return true;
+    if (path === "/api/products" && method === "GET") return true;
+    if (path.startsWith("/api/categories") && method === "GET") return true;
+    if (path.startsWith("/api/addons") && method === "GET") return true;
+    if (path.startsWith("/api/sync/pull") && method === "GET") return true;
+    return false;
+  }
+
+  // Kiosk:
+  // - Allowed: read catalogue data and submit new customer orders only.
+  // - Server-side sale route still enforces order_status = "new".
+  if (role === "kiosk") {
+    if (path === "/api/audit" && method === "POST") return true;
+    if (path.startsWith("/api/sales") && method === "POST") return true;
     if (path === "/api/products" && method === "GET") return true;
     if (path.startsWith("/api/categories") && method === "GET") return true;
     if (path.startsWith("/api/addons") && method === "GET") return true;
@@ -59,6 +87,7 @@ function isAuthorized(role, path, method) {
   // Inventory:
   // - Allowed: Adjust stocks, components, recipes, prep batches, purchase orders, suppliers.
   if (role === "inventory") {
+    if (path === "/api/audit" && method === "POST") return true;
     if (
       path.startsWith("/api/inventory") ||
       path.startsWith("/api/components") ||
@@ -85,6 +114,7 @@ function isAuthorized(role, path, method) {
   // Accountant:
   // - Allowed: Reports, sales logs, sync pulls, catalogue lists.
   if (role === "accountant") {
+    if (path === "/api/audit" && method === "POST") return true;
     if (path.startsWith("/api/reports") && method === "GET") return true;
     if (path.startsWith("/api/sales") && method === "GET") return true;
     if (path.startsWith("/api/sync/pull") && method === "GET") return true;
@@ -103,10 +133,21 @@ function isAuthorized(role, path, method) {
   // - Allowed: View/modify inventory, products, components, recipes, view reports.
   // - Forbidden: Modify system settings.
   if (role === "manager") {
+    if (path === "/api/audit" && method === "POST") return true;
     if (path.startsWith("/api/settings") && method !== "GET") return false;
     return true;
   }
 
+  return false;
+}
+
+function isPublicKioskRoute(path, method) {
+  // Public kiosk is intentionally narrow: customers can read the menu and
+  // submit a new order, but cannot pull sync snapshots or view sales history.
+  if (path === "/api/products" && method === "GET") return true;
+  if (path.startsWith("/api/categories") && method === "GET") return true;
+  if (path.startsWith("/api/addons") && method === "GET") return true;
+  if (path.startsWith("/api/sales") && method === "POST") return true;
   return false;
 }
 
@@ -163,16 +204,24 @@ export const onRequest = async (context) => {
   const isPublicRoute = path.startsWith("/api/auth/") || path === "/api/health";
   if (!isPublicRoute) {
     if (!context.data.user) {
-      return new Response(
-        JSON.stringify({ ok: false, error: "Unauthorized", code: "UNAUTHORIZED" }),
-        {
-          status: 401,
-          headers: {
-            ...corsHeaders,
-            "Content-Type": "application/json; charset=utf-8",
-          },
-        }
-      );
+      if (isPublicKioskRoute(path, request.method)) {
+        context.data.user = {
+          email: "public-kiosk@shopflow.local",
+          role: "kiosk",
+          publicKiosk: true,
+        };
+      } else {
+        return new Response(
+          JSON.stringify({ ok: false, error: "Unauthorized", code: "UNAUTHORIZED" }),
+          {
+            status: 401,
+            headers: {
+              ...corsHeaders,
+              "Content-Type": "application/json; charset=utf-8",
+            },
+          }
+        );
+      }
     }
 
     // 4. Enforce Role-Based Access Control (RBAC)
@@ -196,7 +245,7 @@ export const onRequest = async (context) => {
     let response = await next();
 
     // 5. Intercept and Sanitize Sensitive Cost Data for Cashiers
-    if (context.data.user && context.data.user.role === "cashier") {
+    if (context.data.user && (context.data.user.role === "cashier" || context.data.user.role === "barista" || context.data.user.role === "kiosk")) {
       const contentType = response.headers.get("Content-Type") || "";
       if (contentType.includes("application/json")) {
         const bodyText = await response.text();

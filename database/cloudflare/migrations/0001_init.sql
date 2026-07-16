@@ -171,7 +171,7 @@ CREATE TABLE IF NOT EXISTS sales (
   payment_method  TEXT,
   cashier_name    TEXT,
   payment_status  TEXT NOT NULL DEFAULT 'paid' CHECK (payment_status IN ('paid','pending','refunded')),
-  order_status    TEXT NOT NULL DEFAULT 'completed' CHECK (order_status IN ('completed','cancelled','held','new','preparing','needs_action')),
+  order_status    TEXT NOT NULL DEFAULT 'completed' CHECK (order_status IN ('completed','cancelled','held','new','preparing','ready','needs_action')),
   note            TEXT,
   created_at      INTEGER NOT NULL,
   updated_at      INTEGER NOT NULL DEFAULT 0

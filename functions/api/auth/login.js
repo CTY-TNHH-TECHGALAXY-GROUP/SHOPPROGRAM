@@ -1,4 +1,5 @@
 import { json, badRequest, readJson, hashPassword, createSignedToken } from "../_lib.js";
+import { logAuditEvent } from "../_audit.js";
 
 const SALT = "shopprogram_salt_2026";
 const SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
@@ -14,6 +15,14 @@ const ACCOUNTS = {
   },
   "cashier@shopprogram.local": {
     role: "cashier",
+    hash: "edae5c97f5aa3b493ddee3164ef2a046b101aa241cdee00f3c8afc3aafc0b24a",
+  },
+  "barista@shopprogram.local": {
+    role: "barista",
+    hash: "edae5c97f5aa3b493ddee3164ef2a046b101aa241cdee00f3c8afc3aafc0b24a",
+  },
+  "kiosk@shopprogram.local": {
+    role: "kiosk",
     hash: "edae5c97f5aa3b493ddee3164ef2a046b101aa241cdee00f3c8afc3aafc0b24a",
   },
   "inventory@shopprogram.local": {
@@ -49,6 +58,13 @@ export const onRequestPost = async ({ request, env }) => {
   // kicked out in the middle of normal operations.
   const exp = Date.now() + SESSION_MAX_AGE_SECONDS * 1000;
   const token = await createSignedToken({ email, role: account.role, exp }, env.TOKEN_SECRET);
+
+  await logAuditEvent(env, {
+    eventType: "login",
+    actorEmail: email,
+    actorRole: account.role,
+    target: email,
+  });
 
   const headers = new Headers();
   headers.append(

@@ -9,16 +9,62 @@ import {
 // GET /api/sync/pull?since=<ts>
 // Returns a delta of everything updated after `since`. Client uses it for
 // background sync. Without `since` it returns the full snapshot.
-export const onRequestGet = async ({ env, request }) => {
-  await ensureProductsInventoryModeColumn(env.DB);
-  await ensureComponentsInventoryColumns(env.DB);
-  await ensureProductionTables(env.DB);
-  await ensureSalesStorageCompatibility(env.DB);
+export const onRequestGet = async ({ env, request, data }) => {
+  if (!env.DB || env.DB.__provider !== "supabase") {
+    await ensureProductsInventoryModeColumn(env.DB);
+    await ensureComponentsInventoryColumns(env.DB);
+    await ensureProductionTables(env.DB);
+    await ensureSalesStorageCompatibility(env.DB);
+  }
   const url = new URL(request.url);
   const since = Number(url.searchParams.get("since")) || 0;
+  const isKioskUser = data && data.user && data.user.role === "kiosk";
   // Pull recent terminal rows even if they were completed before `updated_at`
   // existed. This clears stale held/preparing cards on other devices.
   const recentTerminalCutoff = Date.now() - (14 * 24 * 60 * 60 * 1000);
+  const isFullSnapshot = since === 0;
+
+  if (isKioskUser) {
+    const [categories, addOns, products] = await Promise.all([
+      env.DB.prepare(
+        `SELECT id, label, icon, sort_order, is_active, updated_at,
+                parent_id, level, code
+         FROM categories WHERE updated_at > ?`
+      ).bind(since).all(),
+
+      env.DB.prepare(
+        `SELECT id, label, price, group_key, is_active, updated_at
+         FROM add_ons WHERE updated_at > ?`
+      ).bind(since).all(),
+
+      env.DB.prepare(
+        `SELECT p.id, p.name, p.category_id, p.price, p.barcode,
+                p.image, p.description, p.component_ids, p.min_stock, p.is_active,
+                p.inventory_mode,
+                p.unit, p.sku_code, p.updated_at,
+                COALESCE(i.qty_on_hand, 0) AS stock
+         FROM products p
+         LEFT JOIN inventory i ON i.product_id = p.id
+         WHERE p.updated_at > ? OR (i.updated_at IS NOT NULL AND i.updated_at > ?)
+            OR p.is_active = 0`
+      ).bind(since, since).all(),
+    ]);
+
+    return json({
+      ok: true,
+      serverTime: Date.now(),
+      since,
+      categories: categories.results || [],
+      addOns: addOns.results || [],
+      products: products.results || [],
+      inventory: [],
+      components: [],
+      settings: [],
+      recentSales: [],
+      productionRecipes: [],
+      productionBatches: [],
+    });
+  }
 
   const [categories, addOns, components, products, inventory, settings, recentSales, productionRecipes, productionBatches] =
     await Promise.all([
@@ -105,11 +151,12 @@ export const onRequestGet = async ({ env, request }) => {
              WHERE si.sale_id = s.id
            ) as items_json
          FROM sales s
-         WHERE s.order_status IN ('new', 'held', 'preparing', 'needs_action')
+         WHERE s.order_status IN ('new', 'held', 'preparing', 'ready', 'needs_action')
             OR COALESCE(s.updated_at, s.created_at) > ?
+            OR (? = 1 AND s.order_status IN ('completed', 'cancelled'))
             OR (s.order_status IN ('completed', 'cancelled') AND s.created_at > ?)
-         ORDER BY s.created_at DESC LIMIT 1000`
-      ).bind(since, recentTerminalCutoff).all(),
+         ORDER BY s.created_at DESC`
+      ).bind(since, isFullSnapshot ? 1 : 0, recentTerminalCutoff).all(),
 
       env.DB.prepare(
         `SELECT id, name, output_component_id, planned_output_qty, output_unit,

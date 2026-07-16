@@ -342,7 +342,7 @@ export async function ensureSalesStorageCompatibility(db) {
   ).run();
   await db.prepare(
     `ALTER TABLE sales ADD CONSTRAINT sales_order_status_check
-     CHECK (order_status IN ('completed','cancelled','held','new','preparing','needs_action'))`
+     CHECK (order_status IN ('completed','cancelled','held','new','preparing','ready','needs_action'))`
   ).run();
 }
 

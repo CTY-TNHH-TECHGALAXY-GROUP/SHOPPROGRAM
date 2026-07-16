@@ -26,7 +26,7 @@
   var OUTBOX_KEY    = "shopflow-outbox";
   var LAST_SYNC_KEY = "shopflow-last-sync-at";
   var SCHEMA_VERSION_KEY = "shopflow-sync-schema-version";
-  var SCHEMA_VERSION = "2026-06-28-open-order-reconcile-v1";
+  var SCHEMA_VERSION = "2026-07-16-server-report-history-v1";
   var API_BASE      = "/api";
   var FULL_PULL_INTERVAL_MS = 5 * 60 * 1000;
 

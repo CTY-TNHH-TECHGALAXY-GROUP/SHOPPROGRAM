@@ -146,7 +146,7 @@
   repairKnownLocalPaymentIssues();
 
   // Bump this version to force a full re-sync for all clients when data structure changes
-  var CACHE_VERSION = 10;
+  var CACHE_VERSION = 11;
   if (window.localStorage && window.localStorage.getItem("shopflow-cache-version") !== String(CACHE_VERSION)) {
     window.localStorage.removeItem("shopflow-last-sync-at");
     window.localStorage.removeItem("shopflow-categories");
@@ -155,8 +155,9 @@
   var APP_VERSION = "3.6.0";
   var VAT_RATE = 0.08;
   var LANGUAGE_OPTIONS = [
-    { id: "vi", label: "VI" },
-    { id: "en", label: "EN" }
+    { id: "vi", label: "VI", flag: "🇻🇳", name: "Tiếng Việt" },
+    { id: "en", label: "EN", flag: "🇺🇸", name: "English" },
+    { id: "zh", label: "ZH", flag: "🇨🇳", name: "中文" }
   ];
   var PAYMENT_METHOD_DEFAULT = "";
   var PAYMENT_METHOD_PLACEHOLDER = "Chọn / Select";
@@ -171,6 +172,7 @@
     { id: "all", label: "Tất cả / All" },
     { id: "new", label: "Mới / New" },
     { id: "preparing", label: "Đang chuẩn bị / Preparing" },
+    { id: "ready", label: "Sẵn sàng / Ready" },
     { id: "held", label: "Tạm giữ / Held" },
     { id: "needs_action", label: "Cần xử lí / Needs Action" },
     { id: "completed", label: "Hoàn thành / Completed" }
@@ -1427,6 +1429,12 @@
       return text;
     }
 
+    if (language === "zh") {
+      return parts.length >= 3
+        ? parts.slice(2).join(" / ").trim()
+        : (parts.slice(1).join(" / ").trim() || parts[0].trim());
+    }
+
     return language === "en" ? parts.slice(1).join(" / ").trim() : parts[0].trim();
   }
 
@@ -1876,6 +1884,18 @@
       return Math.round(qty * 1000) / 1000;
     }
     return Math.floor(qty);
+  }
+
+  function isPublicKioskRoute() {
+    if (typeof window === "undefined" || !window.location) return false;
+    try {
+      var params = new URLSearchParams(window.location.search || "");
+      return params.get("view") === "kiosk" ||
+        params.get("kiosk") === "1" ||
+        window.location.hash === "#kiosk";
+    } catch (error) {
+      return false;
+    }
   }
 
   function formatDateTime(dateValue) {
@@ -2434,6 +2454,8 @@
   function MenuDrawer(props) {
     var items = [
       { id: "pos", label: "Bán hàng / POS", icon: "🧾", help: "Bán hàng tại quầy / Counter sales" },
+      { id: "barista", label: "Pha chế / Barista", icon: "🍹", help: "Màn hình chờ món / Prep queue" },
+      { id: "kiosk", label: "Kiosk đặt món / Kiosk", icon: "🛒", help: "Khách tự tạo đơn / Customer self-order" },
       { id: "dashboard", label: "Tổng quan / Dashboard", icon: "📊", help: "Tổng quan doanh thu / Sales overview" },
       { id: "inventory", label: "Kho hàng / Inventory", icon: "📦", help: "Sửa, thêm, xóa sản phẩm / Manage products" },
       { id: "settings", label: "Cài đặt / Settings", icon: "⚙️", help: "Cửa hàng, hóa đơn, mã vạch / Shop, invoice, barcode" }
@@ -2442,12 +2464,18 @@
     if (props.user) {
       var role = props.user.role;
       items = items.filter(function (item) {
-        if (role === "admin") return true;
+        if (role === "admin") return item.id !== "kiosk";
         if (role === "manager") {
-          return item.id !== "settings";
+          return item.id !== "settings" && item.id !== "kiosk";
         }
         if (role === "cashier") {
           return item.id === "pos";
+        }
+        if (role === "barista") {
+          return item.id === "barista";
+        }
+        if (role === "kiosk") {
+          return item.id === "kiosk";
         }
         if (role === "inventory") {
           return item.id === "inventory";
@@ -2522,6 +2550,42 @@
     return window.ShopFlowSync.api(path, opts);
   }
 
+  function publicKioskApi(path, opts) {
+    var init = opts || {};
+    return fetch("/api" + path, {
+      method: init.method || "GET",
+      credentials: "omit",
+      headers: init.body
+        ? Object.assign({ "Content-Type": "application/json", "X-Shopflow-Public-Kiosk": "1" }, init.headers || {})
+        : Object.assign({ "X-Shopflow-Public-Kiosk": "1" }, init.headers || {}),
+      body: init.body ? JSON.stringify(init.body) : undefined,
+    }).then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (data) {
+        if (!res.ok || data.ok === false) {
+          var err = new Error((data && data.error) || ("HTTP " + res.status));
+          err.status = res.status;
+          err.data = data;
+          throw err;
+        }
+        return data;
+      });
+    });
+  }
+
+  function postAuditEvent(payload) {
+    return fetch("/api/audit", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload || {})
+    }).then(function (res) {
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return res.json().catch(function () { return {}; });
+    }).catch(function (err) {
+      if (window && window.console) console.warn("audit event skipped", err);
+    });
+  }
+
   function LocalNumberInput(props) {
     var useEffect = window.React.useEffect;
     var useRef = window.React.useRef;
@@ -2572,6 +2636,7 @@
   }
 
   function App() {
+    var publicKioskMode = useMemo(isPublicKioskRoute, []);
     var initialState = useMemo(buildInitialState, []);
     var [nowTick, setNowTick] = useState(Date.now());
     var [categories, setCategories] = useState(initialState.categories);
@@ -2621,7 +2686,7 @@
     var [barcodeTemplates, setBarcodeTemplates] = useState(initialState.barcodeTemplates);
     var [selectedInvoiceTemplateId, setSelectedInvoiceTemplateId] = useState(initialState.selectedInvoiceTemplateId);
     var [selectedBarcodeTemplateId, setSelectedBarcodeTemplateId] = useState(initialState.selectedBarcodeTemplateId);
-    var [activeView, setActiveView] = useState("pos");
+    var [activeView, setActiveView] = useState(publicKioskMode ? "kiosk" : "pos");
     var [menuOpen, setMenuOpen] = useState(false);
 
     // ---- Remote API sync state ----------------------------------
@@ -2714,6 +2779,10 @@
     }
 
     useEffect(function () {
+      if (publicKioskMode) {
+        setAuthLoading(false);
+        return undefined;
+      }
       var hadSessionBefore = false;
       try { hadSessionBefore = window.localStorage.getItem(SESSION_ACTIVE_KEY) === "1"; } catch (error) {}
       fetch("/api/auth/me", { credentials: "include" })
@@ -2744,6 +2813,71 @@
       setActiveShift(null);
       setClosingShift(false);
     }, [currentUser]);
+
+    useEffect(function () {
+      if (!publicKioskMode) return undefined;
+      var cancelled = false;
+      setKioskMessage(L("Đang tải menu... / Loading menu..."));
+
+      Promise.all([
+        publicKioskApi("/products?all=1"),
+        publicKioskApi("/categories"),
+        publicKioskApi("/addons")
+      ]).then(function (results) {
+        if (cancelled) return;
+        var productRows = (results[0] && results[0].products) || [];
+        var categoryRows = (results[1] && results[1].categories) || [];
+        var addonRows = (results[2] && (results[2].addOns || results[2].addons)) || [];
+
+        setProducts(productRows
+          .filter(function (row) { return row && row.isActive !== false && row.is_active !== 0; })
+          .map(function (row) {
+            return normalizeProduct(Object.assign({}, row, {
+              category: row.category || row.category_id,
+              costPrice: row.costPrice || row.cost_price || 0,
+              minStock: row.minStock || row.min_stock || 0,
+              skuCode: row.skuCode || row.sku_code || row.id,
+              inventoryMode: row.inventoryMode || row.inventory_mode || "",
+              componentIds: Array.isArray(row.componentIds)
+                ? row.componentIds
+                : safeJsonParse(row.component_ids, [])
+            }));
+          }));
+
+        setCategories(categoryRows
+          .filter(function (row) { return row && row.is_active !== 0; })
+          .map(function (row) {
+            return {
+              id: row.id,
+              label: row.label,
+              icon: row.icon || "🛒",
+              parentId: row.parentId || row.parent_id || null,
+              level: Number(row.level) || 1,
+              code: row.code || null,
+              sortOrder: Number(row.sortOrder || row.sort_order) || 0
+            };
+          }));
+
+        setAddOns(addonRows
+          .filter(function (row) { return row && row.is_active !== 0; })
+          .map(function (row) {
+            return {
+              id: row.id,
+              label: row.label,
+              price: Number(row.price) || 0,
+              group: row.group || row.groupKey || row.group_key || "extras"
+            };
+          }));
+        setKioskMessage("");
+      }).catch(function (error) {
+        if (cancelled) return;
+        setKioskMessage(L("Không tải được menu. Vui lòng gọi nhân viên. / Could not load menu. Please ask staff.") + " " + (error && error.message ? error.message : ""));
+      });
+
+      return function () {
+        cancelled = true;
+      };
+    }, [publicKioskMode]);
 
     useEffect(function () {
       if (!currentUser) return undefined;
@@ -2779,6 +2913,8 @@
     }, [currentUser]);
 
     function getFirstAllowedView(role) {
+      if (role === "barista") return "barista";
+      if (role === "kiosk") return "kiosk";
       if (role === "inventory") return "inventory";
       if (role === "accountant") return "dashboard";
       return "pos";
@@ -2871,6 +3007,15 @@
       setShiftOpeningCash("");
       setShiftError("");
       pushToast("success", L("Đã mở két đầu ngày. / Cash drawer opened."));
+      postAuditEvent({
+        eventType: "open_shift",
+        target: shift.id,
+        metadata: {
+          shiftId: shift.id,
+          shiftDate: shift.shiftDate,
+          openingCash: openingCash
+        }
+      });
     }
 
     function handleCloseShift(e) {
@@ -2895,6 +3040,17 @@
       setShiftNote("");
       setShiftError("");
       pushToast("success", L("Đã chốt ca và bàn giao két. / Shift closed and drawer handed over."));
+      postAuditEvent({
+        eventType: "close_shift",
+        target: closedShift.id,
+        metadata: {
+          shiftId: closedShift.id,
+          shiftDate: closedShift.shiftDate,
+          openingCash: Number(closedShift.openingCash) || 0,
+          closingCash: closingCash,
+          note: closedShift.note || ""
+        }
+      });
       handleLogout(true);
     }
 
@@ -2936,6 +3092,11 @@
     var [dashboardRevenueMode, setDashboardRevenueMode] = useState("chart");
     var [dashboardTopCategory, setDashboardTopCategory] = useState("all");
     var [dashboardCategoryMenuOpen, setDashboardCategoryMenuOpen] = useState(false);
+    var [dashboardApiData, setDashboardApiData] = useState(null);
+    var [dashboardApiPrevious, setDashboardApiPrevious] = useState(null);
+    var [dashboardApiSales, setDashboardApiSales] = useState([]);
+    var [dashboardApiLoading, setDashboardApiLoading] = useState(false);
+    var [dashboardApiError, setDashboardApiError] = useState("");
     // POS category sidebar: which parent categories are currently expanded.
     // Object map { [parentId]: true }. Starts empty (all collapsed).
     var [expandedCategories, setExpandedCategories] = useState({});
@@ -2954,6 +3115,20 @@
     var [posOrderPicked, setPosOrderPicked] = useState(false);
     var [checkoutPanelOpen, setCheckoutPanelOpen] = useState(false);
     var [productCustomizer, setProductCustomizer] = useState(null);
+    var [kioskCart, setKioskCart] = useState([]);
+    var [kioskCustomerName, setKioskCustomerName] = useState("");
+    var [kioskCustomerPhone, setKioskCustomerPhone] = useState("");
+    var [kioskDeliveryAddress, setKioskDeliveryAddress] = useState("");
+    var [kioskServiceMode, setKioskServiceMode] = useState("");
+    var [kioskPaymentMethod, setKioskPaymentMethod] = useState("");
+    var [kioskStep, setKioskStep] = useState("welcome");
+    var [kioskCartOpen, setKioskCartOpen] = useState(false);
+    var [kioskSuccessOrderId, setKioskSuccessOrderId] = useState("");
+    var [kioskSearchTerm, setKioskSearchTerm] = useState("");
+    var [kioskCategory, setKioskCategory] = useState("all");
+    var [kioskCustomizer, setKioskCustomizer] = useState(null);
+    var [kioskSubmitting, setKioskSubmitting] = useState(false);
+    var [kioskMessage, setKioskMessage] = useState("");
     function toggleCategoryExpanded(id) {
       setExpandedCategories(function (cur) {
         var next = Object.assign({}, cur);
@@ -2966,6 +3141,14 @@
     var [searchTerm, setSearchTerm] = useState("");
     var [functionSearchTerm, setFunctionSearchTerm] = useState("");
     var [settingsSection, setSettingsSection] = useState("general");
+    var [auditLogs, setAuditLogs] = useState([]);
+    var [auditSummary, setAuditSummary] = useState({ login: 0, logout: 0, open_shift: 0, close_shift: 0 });
+    var [auditAccountFilter, setAuditAccountFilter] = useState("");
+    var [auditEventFilter, setAuditEventFilter] = useState("");
+    var [auditStartDate, setAuditStartDate] = useState("");
+    var [auditEndDate, setAuditEndDate] = useState("");
+    var [auditLoading, setAuditLoading] = useState(false);
+    var [auditError, setAuditError] = useState("");
     var [inventorySection, setInventorySection] = useState("stock");
     var [selectedProductIds, setSelectedProductIds] = useState([]);
     var [labelPrintQuantities, setLabelPrintQuantities] = useState({});
@@ -3227,6 +3410,7 @@
     var stockEditTimersRef = useRef({});
 
     useEffect(function () {
+      if (publicKioskMode) return undefined;
       try {
         window.localStorage.setItem(STORAGE_KEY, JSON.stringify(buildPersistedStateSnapshot(true)));
       } catch (error) {
@@ -3252,6 +3436,7 @@
     ]);
 
     useEffect(function () {
+      if (publicKioskMode) return undefined;
       var syncConfig = getFirebaseSyncMeta();
 
       if (firestoreUnsubscribeRef.current) {
@@ -3356,6 +3541,7 @@
     ]);
 
     useEffect(function () {
+      if (publicKioskMode) return undefined;
       var syncConfig = getFirebaseSyncMeta();
 
       if (!syncConfig.enabled || !isFirebaseSyncConfigured(syncConfig) || !firestoreDocRef.current) {
@@ -3408,7 +3594,7 @@
     function buildOpenOrderSalePayload(orderSnapshot) {
       var saleTotals = calculateOrder(orderSnapshot, addOns);
       var payload = buildSalePayload(orderSnapshot, saleTotals, uid("open-sync-op"));
-      payload.orderStatus = getOrderWorkflowStatus(orderSnapshot); // "new", "preparing", "held", "needs_action"
+      payload.orderStatus = getOrderWorkflowStatus(orderSnapshot); // "new", "preparing", "ready", "held", "needs_action"
       
       var originalNote = orderSnapshot.note || "";
       var cleanedNote = originalNote.replace(/^\[status:[a-zA-Z0-9_-]+\]\s*/, "");
@@ -3439,6 +3625,7 @@
     var openOrderSyncDebounceRef = useRef({});
 
     useEffect(function () {
+      if (publicKioskMode) return undefined;
       if (!window.ShopFlowSync) return undefined;
 
       // 1. Detect removed orders (cancelled/deleted)
@@ -3507,6 +3694,7 @@
 
     // ---------- Remote API sync wiring ----------
     useEffect(function () {
+      if (publicKioskMode) return undefined;
       if (!window.ShopFlowSync) return undefined;
 
       function handlePulled(data) {
@@ -3566,6 +3754,7 @@
           if (!match) {
             if (row.order_status === "preparing") status = "preparing";
             else if (row.order_status === "held") status = "held";
+            else if (row.order_status === "ready") status = "ready";
             else if (row.order_status === "needs_action") status = "needs_action";
             else status = "open";
           }
@@ -3868,11 +4057,11 @@
               return !isKnownTechnicalTestSale(sale);
             });
             merged.sort(function (a, b) { return b.createdAt - a.createdAt; });
-            return merged.slice(0, 1000); // Keep last 1000 sales
+            return merged;
           });
 
           // ----- Sync Open Orders across devices -----
-          var openSaleStatuses = new Set(["new", "held", "preparing", "needs_action"]);
+          var openSaleStatuses = new Set(["new", "held", "preparing", "ready", "needs_action"]);
           var openSales = data.recentSales.filter(function (row) { return openSaleStatuses.has(row.order_status); });
           var nonOpenSales = data.recentSales.filter(function (row) {
             return row.order_status === "completed" || row.order_status === "cancelled";
@@ -4079,6 +4268,73 @@
         setMovements(data.movements || []);
       }).catch(function () {});
     }
+
+    function getPreviousRangeBounds(range) {
+      var duration = Math.max(1, (Number(range.to) || Date.now()) - (Number(range.from) || 0) + 1);
+      return {
+        from: Math.max(0, (Number(range.from) || 0) - duration),
+        to: Math.max(0, (Number(range.from) || 0) - 1)
+      };
+    }
+
+    function loadDashboardFromApi() {
+      var range = getDashboardRangeBounds();
+      var previousRange = getPreviousRangeBounds(range);
+      var qs = "from=" + encodeURIComponent(range.from) + "&to=" + encodeURIComponent(range.to);
+      var prevQs = "from=" + encodeURIComponent(previousRange.from) + "&to=" + encodeURIComponent(previousRange.to);
+      setDashboardApiLoading(true);
+      setDashboardApiError("");
+      return Promise.all([
+        syncApi("/reports/summary?" + qs),
+        syncApi("/reports/summary?" + prevQs),
+        syncApi("/sales?" + qs + "&all=1")
+      ]).then(function (results) {
+        setDashboardApiData(results[0] || null);
+        setDashboardApiPrevious(results[1] || null);
+        setDashboardApiSales((results[2] && results[2].sales) || []);
+        setDashboardApiLoading(false);
+      }).catch(function (err) {
+        setDashboardApiLoading(false);
+        setDashboardApiError(err && err.message ? err.message : String(err));
+      });
+    }
+
+    useEffect(function () {
+      if (activeView === "dashboard") {
+        loadDashboardFromApi();
+      }
+    }, [activeView, dashboardRange, dashboardCustomFrom, dashboardCustomTo]);
+
+    function loadAuditLogs() {
+      if (!currentUser || currentUser.role !== "admin") return Promise.resolve();
+      setAuditLoading(true);
+      setAuditError("");
+      var params = new URLSearchParams();
+      var fromTs = auditStartDate ? new Date(auditStartDate + "T00:00:00").getTime() : 0;
+      var toTs = auditEndDate ? new Date(auditEndDate + "T23:59:59.999").getTime() : Date.now();
+      params.set("from", String(fromTs || 0));
+      params.set("to", String(toTs || Date.now()));
+      params.set("limit", "200");
+      if (auditAccountFilter.trim()) params.set("account", auditAccountFilter.trim());
+      if (auditEventFilter) params.set("event_type", auditEventFilter);
+      return syncApi("/admin/audit?" + params.toString())
+        .then(function (data) {
+          setAuditSummary(Object.assign({ login: 0, logout: 0, open_shift: 0, close_shift: 0 }, data.summary || {}));
+          setAuditLogs(data.logs || []);
+          setAuditLoading(false);
+        })
+        .catch(function (err) {
+          setAuditLoading(false);
+          setAuditError(err && err.message ? err.message : String(err));
+        });
+    }
+
+    useEffect(function () {
+      if (activeView === "settings" && settingsSection === "audit" && currentUser && currentUser.role === "admin") {
+        loadAuditLogs();
+      }
+    }, [activeView, settingsSection, auditStartDate, auditEndDate, auditAccountFilter, auditEventFilter, currentUser]);
+
     // Auto refresh when relevant views open.
     useEffect(function () {
       if (activeView === "dashboard") {
@@ -4395,6 +4651,25 @@
       });
     }, [products, categories, selectedCategory, searchTerm]);
 
+    var kioskFilteredProducts = useMemo(function () {
+      return products.filter(function (product) {
+        var category = categories.find(function (item) {
+          return item.id === product.category;
+        });
+        var matchesCategory = categoryMatchesSelected(product.category, kioskCategory, categories);
+        var searchBlob = [
+          product.name,
+          product.id,
+          product.sku,
+          product.barcode,
+          product.description,
+          category ? category.label : ""
+        ].join(" ").toLowerCase();
+        var matchesSearch = !kioskSearchTerm || searchBlob.indexOf(kioskSearchTerm.toLowerCase()) !== -1;
+        return matchesCategory && matchesSearch;
+      });
+    }, [products, categories, kioskCategory, kioskSearchTerm]);
+
     // ---------- Low-stock awareness ----------
     // A product is "low" when its on-hand qty is at or below the configured
     // min_stock. Products with min_stock === 0 are NOT low even at 0 — that's
@@ -4644,10 +4919,12 @@
           ? "Cần xử lí / Needs Action"
           : status === "preparing"
             ? "Đang chuẩn bị / Preparing"
-            : status === "held"
-              ? "Tạm giữ / Held"
-              : "Mới / New";
-        var tone = status === "needs_action" ? "danger" : (status === "preparing" ? "warning" : "info");
+            : status === "ready"
+              ? "Sẵn sàng / Ready"
+              : status === "held"
+                ? "Tạm giữ / Held"
+                : "Mới / New";
+        var tone = status === "needs_action" ? "danger" : (status === "preparing" || status === "held" ? "warning" : (status === "ready" ? "success" : "info"));
         addStatus(status, label, tone, calculateOrder(order, addOns).total);
       });
       var statusBreakdown = Object.values(statusMap).sort(function (a, b) { return b.orders - a.orders; });
@@ -4677,7 +4954,7 @@
           createdAt: Number(order.createdAt) || Date.now(),
           paymentMethod: normalizePaymentMethod(order.paymentMethod),
           statusLabel: "",
-          statusTone: status === "needs_action" ? "danger" : (status === "preparing" || status === "held" ? "warning" : "info"),
+          statusTone: status === "needs_action" ? "danger" : (status === "preparing" || status === "held" ? "warning" : (status === "ready" ? "success" : "info")),
           orderStatus: status,
           order: order
         };
@@ -4689,9 +4966,11 @@
           ? "Cần xử lí / Needs Action"
           : status === "preparing"
             ? "Đang chuẩn bị / Preparing"
-            : status === "held"
-              ? "Tạm giữ / Held"
-              : "Mới / New";
+            : status === "ready"
+              ? "Sẵn sàng / Ready"
+              : status === "held"
+                ? "Tạm giữ / Held"
+                : "Mới / New";
         return Object.assign({}, entry, { statusLabel: label });
       });
       var pendingPurchases = (purchases || []).filter(function (po) {
@@ -4700,6 +4979,156 @@
       var pendingPurchaseTotal = pendingPurchases.reduce(function (sum, po) {
         return sum + (Number(po.total_amount || po.totalAmount) || 0);
       }, 0);
+
+      if (dashboardApiData && dashboardApiData.ok !== false) {
+        var apiTotals = dashboardApiData.totals || {};
+        var apiPreviousTotals = (dashboardApiPrevious && dashboardApiPrevious.totals) || {};
+        var apiRevenue = Number(apiTotals.revenue) || 0;
+        var apiOrdersCount = Number(apiTotals.orderCount) || 0;
+        var apiPreviousRevenue = Number(apiPreviousTotals.revenue) || 0;
+        var apiPreviousOrdersCount = Number(apiPreviousTotals.orderCount) || 0;
+        var apiAvgTicket = apiOrdersCount > 0 ? Math.round(apiRevenue / apiOrdersCount) : 0;
+        var apiPreviousAvgTicket = apiPreviousOrdersCount > 0 ? Math.round(apiPreviousRevenue / apiPreviousOrdersCount) : 0;
+
+        var apiDaySeries = (dashboardApiData.byDay || []).map(function (row) {
+          return {
+            day: row.day,
+            revenue: Number(row.revenue) || 0,
+            orders: Number(row.orders) || 0,
+            sort: new Date(String(row.day || "") + "T00:00:00").getTime() || 0
+          };
+        });
+
+        var apiPaymentBreakdown = (dashboardApiData.byPaymentMethod || []).map(function (row) {
+          var method = normalizePaymentMethod(row.payment_method || row.method);
+          var itemRevenue = Number(row.revenue) || 0;
+          return {
+            method: method,
+            label: getPaymentMethodLabel(method),
+            orders: Number(row.orders) || 0,
+            revenue: itemRevenue,
+            percent: apiRevenue > 0 ? Math.round(itemRevenue / apiRevenue * 1000) / 10 : 0
+          };
+        });
+
+        var apiStatusMap = {};
+        function addApiStatus(id, label, tone, amount) {
+          if (!apiStatusMap[id]) {
+            apiStatusMap[id] = { id: id, label: label, tone: tone, orders: 0, revenue: 0 };
+          }
+          apiStatusMap[id].orders += 1;
+          apiStatusMap[id].revenue += Number(amount) || 0;
+        }
+
+        var apiSalesRows = (dashboardApiSales || []).map(function (row) {
+          return {
+            id: row.id,
+            orderId: row.order_id || row.orderId || row.id,
+            customerName: row.customer_name || row.customerName || L("Khách lẻ / Walk-in"),
+            total: Number(row.total) || 0,
+            createdAt: Number(row.created_at || row.createdAt) || 0,
+            paymentMethod: normalizePaymentMethod(row.payment_method || row.paymentMethod),
+            orderStatus: String(row.order_status || row.orderStatus || "completed").toLowerCase(),
+            paymentStatus: String(row.payment_status || row.paymentStatus || "paid").toLowerCase()
+          };
+        }).filter(function (sale) {
+          return !isKnownTechnicalTestSale(sale);
+        });
+
+        apiSalesRows.forEach(function (sale) {
+          var status = sale.orderStatus || "completed";
+          var label = status === "completed"
+            ? "Hoàn thành / Completed"
+            : status === "cancelled"
+              ? "Đã hủy / Cancelled"
+              : status === "needs_action"
+                ? "Cần xử lí / Needs Action"
+                : status === "preparing"
+                  ? "Đang chuẩn bị / Preparing"
+                  : status === "ready"
+                    ? "Sẵn sàng / Ready"
+                    : status === "held"
+                      ? "Tạm giữ / Held"
+                      : "Mới / New";
+          var tone = status === "completed" || status === "ready"
+            ? "success"
+            : status === "cancelled" || status === "needs_action"
+              ? "danger"
+              : status === "preparing" || status === "held"
+                ? "warning"
+                : "info";
+          addApiStatus(status, label, tone, sale.total);
+        });
+
+        var apiRecentOrders = apiSalesRows.slice().sort(function (a, b) {
+          return b.createdAt - a.createdAt;
+        }).slice(0, 8).map(function (sale) {
+          var status = sale.orderStatus || "completed";
+          var label = status === "completed"
+            ? "Hoàn thành / Completed"
+            : status === "cancelled"
+              ? "Đã hủy / Cancelled"
+              : status === "needs_action"
+                ? "Cần xử lí / Needs Action"
+                : status === "preparing"
+                  ? "Đang chuẩn bị / Preparing"
+                  : status === "ready"
+                    ? "Sẵn sàng / Ready"
+                    : status === "held"
+                      ? "Tạm giữ / Held"
+                      : "Mới / New";
+          return {
+            id: sale.id,
+            orderId: sale.orderId || sale.id,
+            customerName: sale.customerName,
+            total: sale.total,
+            createdAt: sale.createdAt,
+            paymentMethod: sale.paymentMethod,
+            statusLabel: label,
+            statusTone: status === "completed" || status === "ready" ? "success" : (status === "cancelled" || status === "needs_action" ? "danger" : (status === "preparing" || status === "held" ? "warning" : "info")),
+            sale: sale.id
+          };
+        });
+
+        var productLookup = {};
+        products.forEach(function (product) {
+          if (product && product.id) productLookup[String(product.id)] = product;
+        });
+        var apiTopProducts = (dashboardApiData.topProducts || []).map(function (row) {
+          var product = productLookup[String(row.product_id || "")] || null;
+          return {
+            name: row.product_name || (product && product.name) || "",
+            qty: Number(row.qty) || 0,
+            revenue: Number(row.revenue) || 0,
+            image: product && (product.imageIcon || product.image || product.imageUrl),
+            category: product && product.category
+          };
+        }).filter(function (item) {
+          if (!item.name) return false;
+          if (!categoryMatchesSelected(item.category, dashboardTopCategory, categories)) return false;
+          return true;
+        }).slice(0, 6);
+
+        return {
+          range: range,
+          revenue: apiRevenue,
+          ordersCount: apiOrdersCount,
+          ordersDelta: getDelta(apiOrdersCount, apiPreviousOrdersCount),
+          avgTicket: apiAvgTicket,
+          avgTicketDelta: getDelta(apiAvgTicket, apiPreviousAvgTicket),
+          revenueDelta: getDelta(apiRevenue, apiPreviousRevenue),
+          lowStock: lowStock,
+          bestSellerCount: apiTopProducts.length,
+          statusBreakdown: Object.values(apiStatusMap).sort(function (a, b) { return b.orders - a.orders; }),
+          daySeries: apiDaySeries,
+          paymentBreakdown: apiPaymentBreakdown,
+          topProducts: apiTopProducts,
+          pendingPurchases: pendingPurchases,
+          pendingPurchaseTotal: pendingPurchaseTotal,
+          recentOrders: apiRecentOrders,
+          recentSales: apiSalesRows
+        };
+      }
 
       return {
         range: range,
@@ -4802,6 +5231,16 @@
             });
           }
           return nextOrder;
+        });
+      });
+    }
+
+    function updateOrderById(orderId, updater) {
+      setOrders(function (currentOrders) {
+        return currentOrders.map(function (order) {
+          if (order.id !== orderId) return order;
+          var nextOrder = updater(order);
+          return nextOrder ? Object.assign({}, nextOrder, { updatedAt: Date.now() }) : order;
         });
       });
     }
@@ -5376,6 +5815,263 @@
       });
     }
 
+    function openKioskCustomizer(product) {
+      if (!product || !product.id) return;
+      if (shouldCustomizeProduct(product)) {
+        setKioskCustomizer({
+          product: product,
+          addOnIds: [],
+          note: ""
+        });
+        return;
+      }
+      addProductToKioskCart(product);
+    }
+
+    function toggleKioskCustomizerAddon(addOnId) {
+      setKioskCustomizer(function (current) {
+        if (!current) return current;
+        var currentIds = current.addOnIds || [];
+        var hasAddon = currentIds.indexOf(addOnId) !== -1;
+        var nextIds;
+        var addOn = getAddonById(addOnId, getProductAddonOptions(current.product)) || getAddonById(addOnId, addOns);
+
+        if (addOn && addOn.group !== "extras") {
+          nextIds = currentIds.filter(function (currentId) {
+            var currentAddon = getAddonById(currentId, getProductAddonOptions(current.product)) || getAddonById(currentId, addOns);
+            return !(currentAddon && currentAddon.group === addOn.group);
+          });
+        } else {
+          nextIds = currentIds.slice();
+        }
+
+        if (!hasAddon) {
+          nextIds.push(addOnId);
+        } else {
+          nextIds = nextIds.filter(function (currentId) {
+            return currentId !== addOnId;
+          });
+        }
+
+        return Object.assign({}, current, { addOnIds: nextIds });
+      });
+    }
+
+    function addProductToKioskCart(product, options) {
+      if (!product || !product.id) return;
+      setKioskCart(function (current) {
+        return current.concat(createOrderLineFromProduct(product, options || {}));
+      });
+      setKioskMessage("");
+    }
+
+    function getKioskProductStock(product) {
+      if (!product) return Number.POSITIVE_INFINITY;
+      if (product.inventoryMode === "recipe" || product.isMixedDrink) return Number.POSITIVE_INFINITY;
+      var rawStock = product.rawStock != null ? product.rawStock : product.stock;
+      if (rawStock === "" || rawStock == null) return Number.POSITIVE_INFINITY;
+      return Number(rawStock);
+    }
+
+    function isKioskProductSoldOut(product) {
+      var stock = getKioskProductStock(product);
+      return Number.isFinite(stock) && stock <= 0;
+    }
+
+    function getKioskProductFallbackIcon(product) {
+      if (!product) return "🍊";
+      if (product.imageIcon) return product.imageIcon;
+      if (product.icon) return product.icon;
+      if (product.image && !isProductImageUrl(product.image)) return product.image;
+      var categoryDoc = categories.find(function (category) {
+        return category.id === product.category || L(category.label || category.name || category.id) === product.category;
+      });
+      return categoryDoc && categoryDoc.icon ? categoryDoc.icon : "🍊";
+    }
+
+    function useKioskCurrentLocation() {
+      if (typeof navigator === "undefined" || !navigator.geolocation) {
+        setKioskMessage(L("Thiết bị không hỗ trợ lấy vị trí. / Location is not supported on this device."));
+        setKioskCartOpen(true);
+        return;
+      }
+      setKioskMessage(L("Đang lấy vị trí... / Getting location..."));
+      navigator.geolocation.getCurrentPosition(
+        function (position) {
+          var lat = position && position.coords ? position.coords.latitude : "";
+          var lng = position && position.coords ? position.coords.longitude : "";
+          if (!lat || !lng) {
+            setKioskMessage(L("Không lấy được vị trí. / Could not get location."));
+            return;
+          }
+          setKioskDeliveryAddress("https://maps.google.com/?q=" + lat + "," + lng);
+          setKioskMessage("");
+        },
+        function () {
+          setKioskMessage(L("Không lấy được vị trí. Vui lòng nhập địa chỉ. / Could not get location. Please type the address."));
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+      );
+    }
+
+    function resetKioskFlow() {
+      setKioskCart([]);
+      setKioskCustomerName("");
+      setKioskCustomerPhone("");
+      setKioskDeliveryAddress("");
+      setKioskServiceMode("");
+      setKioskPaymentMethod("");
+      setKioskSearchTerm("");
+      setKioskCategory("all");
+      setKioskCustomizer(null);
+      setKioskCartOpen(false);
+      setKioskSuccessOrderId("");
+      setKioskMessage("");
+      setKioskStep("welcome");
+    }
+
+    function addCustomizedProductToKioskCart() {
+      if (!kioskCustomizer || !kioskCustomizer.product) return;
+      addProductToKioskCart(kioskCustomizer.product, {
+        addOnIds: kioskCustomizer.addOnIds || [],
+        note: kioskCustomizer.note || ""
+      });
+      setKioskCustomizer(null);
+    }
+
+    function adjustKioskItemQty(itemId, delta) {
+      var deltaNum = Number(delta) || 0;
+      setKioskCart(function (currentItems) {
+        return currentItems
+          .map(function (item) {
+            if (item.id !== itemId) return item;
+            var nextQty = normalizeQtyForUnit((Number(item.qty) || 0) + deltaNum, getOrderItemUnit(item));
+            return Object.assign({}, item, { qty: nextQty });
+          })
+          .filter(function (item) { return Number(item.qty) > 0; });
+      });
+    }
+
+    function removeKioskItem(itemId) {
+      setKioskCart(function (currentItems) {
+        return currentItems.filter(function (item) { return item.id !== itemId; });
+      });
+    }
+
+    function submitKioskOrder() {
+      if (kioskSubmitting) return;
+      if (!kioskCart.length) {
+        setKioskMessage(L("Vui lòng chọn ít nhất 1 món. / Please choose at least one item."));
+        setKioskCartOpen(true);
+        return;
+      }
+      if (!kioskServiceMode) {
+        setKioskMessage(L("Vui lòng chọn lấy tại quán hoặc giao hàng. / Please choose pickup or delivery."));
+        setKioskStep("welcome");
+        return;
+      }
+      if (kioskServiceMode === "delivery" && !kioskDeliveryAddress.trim()) {
+        setKioskMessage(L("Vui lòng nhập địa chỉ giao hàng. / Please enter the delivery address."));
+        setKioskCartOpen(true);
+        return;
+      }
+      if (!kioskCustomerName.trim() || !kioskCustomerPhone.trim()) {
+        setKioskMessage(L("Vui lòng nhập tên và số điện thoại. / Please enter your name and phone number."));
+        setKioskCartOpen(true);
+        return;
+      }
+      if (!normalizePaymentMethod(kioskPaymentMethod)) {
+        setKioskMessage(L("Vui lòng chọn tiền mặt hoặc chuyển khoản. / Please choose cash or bank transfer."));
+        setKioskCartOpen(true);
+        return;
+      }
+
+      var sequenceResult = publicKioskMode ? null : createOrder(orderSequenceByDate);
+      var kioskBaseOrder = publicKioskMode
+        ? normalizeOrder({
+          id: uid("kiosk-local"),
+          createdAt: Date.now(),
+          orderNumberSource: "server"
+        })
+        : sequenceResult.order;
+      var kioskNoteParts = [
+        "[source:kiosk]",
+        "[service:" + kioskServiceMode + "]",
+        "[phone:" + kioskCustomerPhone.trim() + "]"
+      ];
+      if (kioskDeliveryAddress.trim()) {
+        kioskNoteParts.push("[address:" + kioskDeliveryAddress.trim() + "]");
+      }
+      var kioskNote = kioskNoteParts.join(" ");
+      var kioskOrder = normalizeOrder(Object.assign({}, kioskBaseOrder, {
+        customerName: kioskCustomerName.trim(),
+        items: kioskCart,
+        status: "new",
+        paymentMethod: normalizePaymentMethod(kioskPaymentMethod),
+        cashReceived: 0,
+        takeAway: kioskServiceMode === "pickup",
+        note: kioskNote,
+        updatedAt: Date.now()
+      }));
+      var payload = buildOpenOrderSalePayload(kioskOrder);
+      payload.clientOpId = uid("kiosk-op");
+      payload.orderStatus = "new";
+      payload.paymentMethod = normalizePaymentMethod(kioskPaymentMethod);
+      payload.note = "[status:new] " + kioskNote;
+      payload.customerPhone = kioskCustomerPhone.trim();
+      payload.deliveryAddress = kioskDeliveryAddress.trim();
+      payload.orderType = kioskServiceMode === "delivery" ? "delivery" : "takeaway";
+      if (publicKioskMode) {
+        // Public kiosk orders should receive the canonical order number from
+        // the server to avoid duplicate local sequences across customer devices.
+        delete payload.id;
+        delete payload.orderId;
+      }
+
+      setKioskSubmitting(true);
+      setKioskMessage(L("Đang gửi đơn... / Sending order..."));
+
+      var saveKioskOrder = publicKioskMode
+        ? publicKioskApi("/sales", { method: "POST", body: payload })
+        : saveSaleWithOneRetry(payload);
+
+      saveKioskOrder
+        .then(function (response) {
+          var syncedOrder = normalizeOrder(Object.assign({}, kioskOrder, {
+            id: response && response.orderId ? response.orderId : kioskOrder.id,
+            reservedSaleId: response && response.id ? response.id : kioskOrder.reservedSaleId,
+            orderNumberSource: response && response.id ? "server" : kioskOrder.orderNumberSource,
+            status: "new",
+            syncError: ""
+          }));
+
+          if (!publicKioskMode && sequenceResult) {
+            setOrderSequenceByDate(sequenceResult.nextSequenceByDate);
+            setOrders(function (currentOrders) {
+              return [syncedOrder].concat(currentOrders.filter(function (order) {
+                return order.id !== syncedOrder.id;
+              }));
+            });
+          }
+          var successId = response && response.orderId ? response.orderId : syncedOrder.id;
+          setKioskSuccessOrderId(successId || "");
+          setKioskCartOpen(false);
+          setKioskStep("success");
+          setKioskMessage("");
+          pushToast("success", L("Đã gửi đơn kiosk. / Kiosk order sent."));
+          window.setTimeout(function () {
+            resetKioskFlow();
+          }, 5000);
+        })
+        .catch(function (error) {
+          setKioskMessage(L("Chưa gửi được đơn. / Could not send order.") + " " + (error && error.message ? error.message : ""));
+          pushToast("error", L("Kiosk chưa gửi được đơn. / Kiosk order failed."));
+        })
+        .then(function () {
+          setKioskSubmitting(false);
+        });
+    }
+
     function adjustItemQty(itemId, delta) {
       var deltaNum = Number(delta) || 0;
       updateActiveOrder(function (order) {
@@ -5568,6 +6264,18 @@
         return Object.assign({}, order, { status: "ready" });
       });
       pushToast("success", L("Đơn đã chuẩn bị xong. / Order is ready."));
+    }
+
+    function finishPreparingOrderById(orderId) {
+      var targetOrder = orders.find(function (order) { return order.id === orderId; });
+      if (!targetOrder || getOrderWorkflowStatus(targetOrder) !== "preparing") return;
+      updateOrderById(orderId, function (order) {
+        return Object.assign({}, order, {
+          status: "ready",
+          syncError: ""
+        });
+      });
+      pushToast("success", L("Đã chuyển đơn sang sẵn sàng. / Order marked ready."));
     }
 
     function holdOrder() {
@@ -6106,10 +6814,14 @@
       setOrderHistoryModalOpen(true);
       setOrderHistoryLoading(true);
       setOrderHistoryError("");
-      syncApi("/sales?limit=20000")
+      var range = getOrderHistoryRangeBounds();
+      var qs = "from=" + encodeURIComponent(range.from || 0) + "&to=" + encodeURIComponent(range.to || Date.now()) + "&all=1";
+      syncApi("/sales?" + qs)
         .then(function (data) {
           var rows = Array.isArray(data && data.sales) ? data.sales : [];
-          setOrderHistoryRows(rows.map(normalizeSaleRecord));
+          setOrderHistoryRows(rows.map(function (row) {
+            return normalizeSaleRecord(Object.assign({ syncStatus: "synced" }, row));
+          }));
         })
         .catch(function (error) {
           setOrderHistoryRows((sales || []).map(normalizeSaleRecord));
@@ -9178,6 +9890,484 @@
       `;
     }
 
+    function renderKioskCustomizerModal() {
+      if (!kioskCustomizer || !kioskCustomizer.product) return null;
+      var product = kioskCustomizer.product;
+      var availableAddOns = getProductAddonOptions(product);
+      var selectedIds = kioskCustomizer.addOnIds || [];
+      var selectedTotal = selectedIds.reduce(function (sum, addOnId) {
+        var addOn = getAddonById(addOnId, availableAddOns) || getAddonById(addOnId, addOns);
+        return sum + (addOn ? Number(addOn.price) || 0 : 0);
+      }, 0);
+      var unitTotal = (Number(product.price) || 0) + selectedTotal;
+
+      return html`
+        <div className="detail-modal-backdrop" role="presentation" onClick=${function () { setKioskCustomizer(null); }}>
+          <section className="detail-modal surface product-customizer-modal kiosk-customizer-modal" role="dialog" aria-modal="true" onClick=${function (event) { event.stopPropagation(); }}>
+            <div className="detail-modal-head">
+              <div>
+                <p className="eyebrow">${L("Tùy chỉnh món / Customize Item")}</p>
+                <h2>${product.imageIcon || ""} ${product.name}</h2>
+                <small>${formatCurrency(product.price)} · ${formatCurrency(unitTotal)}</small>
+              </div>
+              <button type="button" className="ghost-btn kiosk-modal-close" onClick=${function () { setKioskCustomizer(null); }}>×</button>
+            </div>
+
+            <div className="customizer-section">
+              <div className="section-top compact">
+                <div>
+                  <p className="eyebrow">${L("Add-ons")}</p>
+                  <h3>${L("Chọn thêm cho món / Select add-ons")}</h3>
+                </div>
+              </div>
+              ${availableAddOns.length ? html`
+                <div className="customizer-addon-grid">
+                  ${availableAddOns.map(function (addOn) {
+                    var active = selectedIds.indexOf(addOn.id) !== -1;
+                    return html`
+                      <button
+                        key=${addOn.id}
+                        type="button"
+                        className=${"addon-chip customizer-addon-chip" + (active ? " is-active" : "")}
+                        onClick=${function () { toggleKioskCustomizerAddon(addOn.id); }}
+                      >
+                        <span>${L(addOn.label)}</span>
+                        ${addOn.price ? html`<strong>+${formatCurrency(addOn.price)}</strong>` : null}
+                      </button>
+                    `;
+                  })}
+                </div>
+              ` : html`
+                <div className="empty-state align-left">${L("Món này chưa có add-ons. / No add-ons configured for this item.")}</div>
+              `}
+            </div>
+
+            <label className="field customizer-note-field">
+              <span>${L("Ghi chú cho món / Item note")}</span>
+              <textarea
+                rows="3"
+                placeholder=${L("Ví dụ: ít đá, ít ngọt... / Example: less ice, less sweet...")}
+                value=${kioskCustomizer.note || ""}
+                onInput=${function (event) {
+                  var value = event.target.value;
+                  setKioskCustomizer(function (current) {
+                    return current ? Object.assign({}, current, { note: value }) : current;
+                  });
+                }}
+              ></textarea>
+            </label>
+
+            <div className="button-row button-row-main customizer-actions">
+              <button type="button" className="ghost-btn" onClick=${function () { setKioskCustomizer(null); }}>${L("Hủy / Cancel")}</button>
+              <button type="button" className="primary-btn" onClick=${addCustomizedProductToKioskCart}>
+                ${L("Thêm vào giỏ / Add to Cart")}
+              </button>
+            </div>
+          </section>
+        </div>
+      `;
+    }
+
+    function renderKioskView() {
+      var kioskCopy = {
+        eyebrow: { vi: "Kiosk tự đặt hàng", en: "Self-order kiosk", zh: "自助点餐" },
+        title: { vi: "Trái cây & đồ uống OriaFarm", en: "OriaFarm fruit & drinks", zh: "OriaFarm 水果与饮品" },
+        subtitle: { vi: "Chọn món thật nhanh, quầy sẽ xác nhận và chuẩn bị đơn cho bạn.", en: "Pick your items quickly. The cashier will confirm and prepare your order.", zh: "快速选择商品，收银台会确认并准备订单。" },
+        welcome: { vi: "Xin chào quý khách!", en: "Welcome!", zh: "欢迎光临！" },
+        pickup: { vi: "Lấy tại cửa hàng", en: "Pick up in store", zh: "到店自取" },
+        delivery: { vi: "Giao hàng tận nơi", en: "Delivery", zh: "送货上门" },
+        back: { vi: "Quay lại", en: "Back", zh: "返回" },
+        categories: { vi: "Danh mục", en: "Categories", zh: "分类" },
+        search: { vi: "Tìm món yêu thích, mã vạch...", en: "Search favorite item, barcode...", zh: "搜索商品或条码..." },
+        showing: { vi: "đang hiển thị", en: "showing", zh: "正在显示" },
+        cart: { vi: "Giỏ hàng của bạn", en: "Your cart", zh: "您的购物车" },
+        cartHint: { vi: "Kiểm tra lại món trước khi gửi đơn.", en: "Review items before sending your order.", zh: "提交前请确认商品。" },
+        customerName: { vi: "Tên của bạn", en: "Your name", zh: "您的姓名" },
+        customerPhone: { vi: "Số điện thoại", en: "Phone number", zh: "电话号码" },
+        deliveryAddress: { vi: "Địa chỉ giao hàng", en: "Delivery address", zh: "送货地址" },
+        deliveryAddressPlaceholder: { vi: "Nhập địa chỉ hoặc bấm lấy vị trí", en: "Type address or use current location", zh: "输入地址或使用当前位置" },
+        getLocation: { vi: "Lấy vị trí", en: "Use location", zh: "使用位置" },
+        walkIn: { vi: "Khách lẻ", en: "Walk-in", zh: "散客" },
+        emptyCart: { vi: "Chưa có món trong giỏ.", en: "No items yet.", zh: "购物车为空。" },
+        send: { vi: "Hoàn tất đơn hàng", en: "Complete Order", zh: "完成订单" },
+        sending: { vi: "Đang gửi...", en: "Sending...", zh: "正在提交..." },
+        add: { vi: "Thêm", en: "Add", zh: "添加" },
+        subtotal: { vi: "Tổng cộng", en: "Subtotal", zh: "小计" },
+        items: { vi: "món", en: "items", zh: "件" },
+        viewCart: { vi: "Xem giỏ hàng", en: "View cart", zh: "查看购物车" },
+        payment: { vi: "Phương thức thanh toán", en: "Payment method", zh: "付款方式" },
+        cash: { vi: "Tiền mặt", en: "Cash", zh: "现金" },
+        bank: { vi: "Chuyển khoản", en: "Bank transfer", zh: "银行转账" },
+        soldOut: { vi: "Hết hàng", en: "Sold out", zh: "售罄" },
+        successTitle: { vi: "Cảm ơn quý khách!", en: "Thank you!", zh: "谢谢光临！" },
+        successBody: { vi: "Mã đơn đã được gửi thành công.", en: "Your order code was sent successfully.", zh: "订单已成功发送。" },
+        resetHint: { vi: "Màn hình sẽ tự quay lại sau 5 giây.", en: "This screen will reset in 5 seconds.", zh: "屏幕将在 5 秒后重置。" }
+      };
+      function KT(key) {
+        var row = kioskCopy[key] || {};
+        return row[language] || row.en || row.vi || key;
+      }
+      var kioskCategoryOptions = filterCategories.filter(function (category) {
+        return category.id === "all" || !category._depth;
+      }).slice(0, 4);
+      var kioskOrderPreview = normalizeOrder({
+        id: L("Đơn kiosk / Kiosk order"),
+        items: kioskCart,
+        discountAmount: 0,
+        cashReceived: 0,
+        paymentMethod: normalizePaymentMethod(kioskPaymentMethod),
+        status: "new"
+      });
+      var kioskTotals = calculateOrder(kioskOrderPreview, addOns);
+
+      function renderKioskCartItem(item, index) {
+        var itemAddOns = (item.addOnIds || []).map(function (addOnId) {
+          return getAddonById(addOnId, addOns) || { id: addOnId, label: addOnId, price: 0 };
+        });
+        var itemTotal = calculateOrder(normalizeOrder({ items: [item] }), addOns).total;
+        return html`
+          <article className="kiosk-cart-item" key=${item.id}>
+            <div className="kiosk-cart-line">
+              <div>
+                <strong>${index + 1}. ${item.name}</strong>
+                ${itemAddOns.length || item.note ? html`
+                  <div className="kiosk-cart-notes">
+                    ${itemAddOns.map(function (addOn) {
+                      return html`<span key=${addOn.id}>${L(addOn.label)}${addOn.price ? " +" + formatCurrency(addOn.price) : ""}</span>`;
+                    })}
+                    ${item.note ? html`<span>${item.note}</span>` : null}
+                  </div>
+                ` : null}
+              </div>
+              <button type="button" className="ghost-btn kiosk-remove-btn" onClick=${function () { removeKioskItem(item.id); }}>×</button>
+            </div>
+            <div className="kiosk-cart-controls">
+              <button type="button" className="qty-btn" onClick=${function () { adjustKioskItemQty(item.id, -1); }}>−</button>
+              <strong>${formatQuantity(item.qty, 2)}</strong>
+              <button type="button" className="qty-btn" onClick=${function () { adjustKioskItemQty(item.id, 1); }}>+</button>
+              <span>${formatCurrency(itemTotal)}</span>
+            </div>
+          </article>
+        `;
+      }
+
+      function renderKioskWelcome() {
+        return html`
+          <section className="kiosk-welcome surface">
+            <div className="kiosk-welcome-mark">🍋</div>
+            <p className="eyebrow">${KT("eyebrow")}</p>
+            <h2>${settings.brandDisplayName || settings.storeName || "OriaFarm"}</h2>
+            <p>${KT("welcome")}</p>
+            <div className="kiosk-service-grid">
+              <button type="button" className="kiosk-service-btn is-primary" onClick=${function () {
+                setKioskServiceMode("pickup");
+                setKioskStep("menu");
+              }}>
+                <span>🏪</span>
+                <strong>${KT("pickup")}</strong>
+              </button>
+              <button type="button" className="kiosk-service-btn" onClick=${function () {
+                setKioskServiceMode("delivery");
+                setKioskStep("menu");
+              }}>
+                <span>🛵</span>
+                <strong>${KT("delivery")}</strong>
+              </button>
+            </div>
+            ${kioskMessage ? html`<div className="kiosk-message">${kioskMessage}</div>` : null}
+          </section>
+        `;
+      }
+
+      function renderKioskSuccess() {
+        return html`
+          <section className="kiosk-success surface">
+            <div className="kiosk-success-icon">✓</div>
+            <p className="eyebrow">${KT("successTitle")}</p>
+            <h2>${KT("successBody")}</h2>
+            ${kioskSuccessOrderId ? html`<strong className="kiosk-success-code">${kioskSuccessOrderId}</strong>` : null}
+            <p>${KT("resetHint")}</p>
+          </section>
+        `;
+      }
+
+      function renderKioskCheckoutModal() {
+        if (!kioskCartOpen) return null;
+        return html`
+          <div className="detail-modal-backdrop" role="presentation" onClick=${function () { setKioskCartOpen(false); }}>
+            <section className="detail-modal surface kiosk-checkout-modal" role="dialog" aria-modal="true" onClick=${function (event) { event.stopPropagation(); }}>
+              <div className="detail-modal-head">
+                <div>
+                  <p className="eyebrow">${KT("cart")}</p>
+                  <h2>${KT("cartHint")}</h2>
+                  <small>${kioskServiceMode === "delivery" ? KT("delivery") : KT("pickup")}</small>
+                </div>
+                <button type="button" className="ghost-btn kiosk-modal-close" onClick=${function () { setKioskCartOpen(false); }}>×</button>
+              </div>
+
+              <div className="kiosk-cart-list">
+                ${kioskCart.length ? kioskCart.map(renderKioskCartItem) : html`
+                  <div className="empty-state align-left">${KT("emptyCart")}</div>
+                `}
+              </div>
+
+              <div className="kiosk-checkout-fields">
+                <label className="field">
+                  <span>${KT("customerName")}</span>
+                  <input
+                    value=${kioskCustomerName}
+                    placeholder=${KT("customerName")}
+                    onInput=${function (event) { setKioskCustomerName(event.target.value); }}
+                  />
+                </label>
+                <label className="field">
+                  <span>${KT("customerPhone")}</span>
+                  <input
+                    value=${kioskCustomerPhone}
+                    inputMode="tel"
+                    placeholder=${KT("customerPhone")}
+                    onInput=${function (event) { setKioskCustomerPhone(event.target.value); }}
+                  />
+                </label>
+                ${kioskServiceMode === "delivery" ? html`
+                  <label className="field kiosk-delivery-field">
+                    <span>${KT("deliveryAddress")}</span>
+                    <div className="kiosk-location-row">
+                      <input
+                        value=${kioskDeliveryAddress}
+                        placeholder=${KT("deliveryAddressPlaceholder")}
+                        onInput=${function (event) { setKioskDeliveryAddress(event.target.value); }}
+                      />
+                      <button type="button" className="ghost-btn kiosk-location-btn" onClick=${useKioskCurrentLocation}>${KT("getLocation")}</button>
+                    </div>
+                  </label>
+                ` : null}
+              </div>
+
+              <div className="kiosk-payment-box">
+                <span>${KT("payment")}</span>
+                <div className="kiosk-payment-options">
+                  ${[
+                    { id: "cash", icon: "💵", label: KT("cash") },
+                    { id: "bank_transfer", icon: "🏦", label: KT("bank") }
+                  ].map(function (method) {
+                    return html`
+                      <button
+                        key=${method.id}
+                        type="button"
+                        className=${"kiosk-payment-btn" + (normalizePaymentMethod(kioskPaymentMethod) === method.id ? " is-active" : "")}
+                        onClick=${function () { setKioskPaymentMethod(method.id); setKioskMessage(""); }}
+                      >
+                        <span>${method.icon}</span>
+                        <strong>${method.label}</strong>
+                      </button>
+                    `;
+                  })}
+                </div>
+              </div>
+
+              <div className="kiosk-cart-total">
+                <span>${KT("subtotal")}</span>
+                <strong>${formatCurrency(kioskTotals.total)}</strong>
+              </div>
+              ${kioskMessage ? html`<div className="kiosk-message">${kioskMessage}</div>` : null}
+              <button type="button" className="primary-btn kiosk-submit-btn" disabled=${kioskSubmitting || !kioskCart.length} onClick=${submitKioskOrder}>
+                ${kioskSubmitting ? KT("sending") : KT("send")} →
+              </button>
+            </section>
+          </div>
+        `;
+      }
+
+      if (kioskStep === "welcome") {
+        return html`
+          <section className="kiosk-view kiosk-view-centered">
+            ${renderKioskWelcome()}
+          </section>
+        `;
+      }
+
+      if (kioskStep === "success") {
+        return html`
+          <section className="kiosk-view kiosk-view-centered">
+            ${renderKioskSuccess()}
+          </section>
+        `;
+      }
+
+      return html`
+        <section className="kiosk-view">
+          <div className="kiosk-session-strip">
+            <button type="button" className="ghost-btn kiosk-soft-btn" onClick=${function () { resetKioskFlow(); }}>← ${KT("back")}</button>
+            <span>${kioskServiceMode === "delivery" ? KT("delivery") : KT("pickup")}</span>
+            ${kioskCart.length ? html`
+              <button type="button" className="kiosk-total-pill" onClick=${function () { setKioskCartOpen(true); }}>
+                <span>${kioskCart.length} ${KT("items")}</span>
+                <strong>${formatCurrency(kioskTotals.total)}</strong>
+              </button>
+            ` : null}
+          </div>
+
+          <div className="kiosk-layout">
+            <section className="kiosk-products surface">
+              <div className="kiosk-toolbar">
+                <label className="kiosk-search-box">
+                  <span aria-hidden="true">⌕</span>
+                  <input
+                    value=${kioskSearchTerm}
+                    placeholder=${KT("search")}
+                    onInput=${function (event) { setKioskSearchTerm(event.target.value); }}
+                  />
+                </label>
+                <span className="kiosk-result-count">${kioskFilteredProducts.length} ${KT("showing")}</span>
+              </div>
+              <div className="kiosk-category-rail" aria-label=${KT("categories")}>
+                ${kioskCategoryOptions.map(function (category) {
+                  return html`
+                    <button
+                      key=${category.id}
+                      type="button"
+                      className=${"kiosk-category-btn" + (kioskCategory === category.id ? " is-active" : "")}
+                      onClick=${function () { setKioskCategory(category.id); }}
+                    >
+                      <span>${category.icon || "•"}</span>
+                      <strong>${L(category.label || category.name || category.id)}</strong>
+                    </button>
+                  `;
+                })}
+              </div>
+              <div className="kiosk-product-grid">
+                ${kioskFilteredProducts.map(function (product) {
+                  var soldOut = isKioskProductSoldOut(product);
+                  return html`
+                    <article className=${"kiosk-product-card" + (soldOut ? " is-sold-out" : "")} key=${product.id}>
+                      ${soldOut ? html`<span className="kiosk-product-badge">${KT("soldOut")}</span>` : null}
+                      ${renderProductMedia(product)}
+                      <div className="kiosk-product-copy">
+                        <h3>${product.name}</h3>
+                        <p>${product.description || product.barcode || product.id}</p>
+                      </div>
+                      <div className="kiosk-product-bottom">
+                        <strong>${formatCurrency(product.price)}</strong>
+                        <button
+                          type="button"
+                          className="pos-add-btn kiosk-add-btn"
+                          disabled=${soldOut}
+                          aria-label=${KT("add") + " " + product.name}
+                          onClick=${function () { if (!soldOut) openKioskCustomizer(product); }}
+                        >${soldOut ? "×" : "+"}</button>
+                      </div>
+                    </article>
+                  `;
+                })}
+              </div>
+            </section>
+          </div>
+
+          ${kioskCart.length ? html`
+            <button type="button" className="kiosk-floating-cart primary-btn" onClick=${function () { setKioskCartOpen(true); }}>
+              <span>🛒 ${kioskCart.length} ${KT("items")}</span>
+              <span className="kiosk-floating-preview" aria-hidden="true">
+                ${kioskCart.slice(0, 3).map(function (item) {
+                  var product = item.productId ? findProductById(item.productId) : null;
+                  return html`<span className="kiosk-floating-thumb" key=${item.id}>${product && product.imageUrl ? html`<img src=${product.imageUrl} alt="" />` : getKioskProductFallbackIcon(product)}</span>`;
+                })}
+              </span>
+              <strong>${KT("viewCart")} · ${formatCurrency(kioskTotals.total)} →</strong>
+            </button>
+          ` : null}
+          ${renderKioskCheckoutModal()}
+          ${renderKioskCustomizerModal()}
+        </section>
+      `;
+    }
+
+    function renderBaristaView() {
+      var preparingOrders = orders.filter(function (order) {
+        return getOrderWorkflowStatus(order) === "preparing";
+      });
+      var readyOrders = orders.filter(function (order) {
+        return getOrderWorkflowStatus(order) === "ready";
+      });
+      var queueOrders = preparingOrders.concat(readyOrders);
+
+      function renderOrderItemLine(item, index) {
+        var product = item.productId ? findProductById(item.productId) : null;
+        var itemAddOns = (item.addOns || item.addons || item.addOnIds || []).map(normalizeAddOnOption);
+        return html`
+          <div className="barista-item" key=${(item.id || item.productId || item.name || "item") + "-" + index}>
+            <div>
+              <strong>${index + 1}. ${item.name || (product && product.name) || L("Sản phẩm / Product")}</strong>
+              <small>${formatQuantity(item.qty || 0, 2)} ${item.unit || (product && product.unit) || L("món / item")}</small>
+            </div>
+            ${itemAddOns.length || item.note ? html`
+              <div className="barista-item-notes">
+                ${itemAddOns.map(function (addon) {
+                  return html`<span key=${addon.id || addon.label}>${pickLanguage(addon.label || addon.name || addon.id, language)}</span>`;
+                })}
+                ${item.note ? html`<span>${item.note}</span>` : null}
+              </div>
+            ` : html`<small className="barista-muted">${L("Không có add-ons / No add-ons")}</small>`}
+          </div>
+        `;
+      }
+
+      function renderQueueCard(order) {
+        var status = getOrderWorkflowStatus(order);
+        var totalsForOrder = calculateOrder(order, addOns);
+        return html`
+          <article className=${"barista-card surface order-chip-status-" + status} key=${order.id}>
+            <div className="barista-card-head">
+              <div>
+                <p className="eyebrow">${status === "ready" ? L("Sẵn sàng / Ready") : L("Đang chuẩn bị / Preparing")}</p>
+                <h3>${order.id}</h3>
+                <small>${formatDateTime(order.updatedAt || order.createdAt || Date.now())}</small>
+              </div>
+              <span>${formatCurrency(totalsForOrder.total)}</span>
+            </div>
+            <div className="barista-items">
+              ${(order.items || []).map(renderOrderItemLine)}
+            </div>
+            <div className="barista-actions">
+              ${status === "preparing" ? html`
+                <button className="primary-btn" onClick=${function () { finishPreparingOrderById(order.id); }}>
+                  ${L("Hoàn tất món / Mark Ready")}
+                </button>
+              ` : html`
+                <span className="barista-ready-note">${L("Chờ cashier thanh toán / Waiting for cashier checkout")}</span>
+              `}
+            </div>
+          </article>
+        `;
+      }
+
+      return html`
+        <section className="barista-view">
+          <div className="section-top">
+            <div>
+              <p className="eyebrow">${L("Pha chế / Barista")}</p>
+              <h2 className="section-title">${L("Màn hình chờ món / Prep Queue")}</h2>
+              <p className="muted-text">${L("Đơn được cashier xác nhận sẽ xuất hiện ở đây, kèm add-ons và ghi chú. / Accepted recipe orders appear here with add-ons and notes.")}</p>
+            </div>
+            <div className="barista-summary">
+              <span>${preparingOrders.length} ${L("đang chuẩn bị / preparing")}</span>
+              <span>${readyOrders.length} ${L("sẵn sàng / ready")}</span>
+            </div>
+          </div>
+
+          ${queueOrders.length ? html`
+            <div className="barista-grid">
+              ${queueOrders.map(renderQueueCard)}
+            </div>
+          ` : html`
+            <div className="surface section-card empty-state align-left">
+              ${L("Chưa có món pha chế đang chờ. / No preparation orders yet.")}
+            </div>
+          `}
+        </section>
+      `;
+    }
+
     function renderPosView() {
       var changeDue = Math.max(0, (Number(activeOrder.cashReceived) || 0) - totals.total);
       var quickCashOptions = [50000, 100000, 200000, 500000];
@@ -9269,7 +10459,7 @@
         counts[status] = (counts[status] || 0) + 1;
         counts.all += 1;
         return counts;
-      }, { all: completedSalesToday.length, new: 0, preparing: 0, held: 0, needs_action: 0, completed: completedSalesToday.length });
+      }, { all: completedSalesToday.length, new: 0, preparing: 0, ready: 0, held: 0, needs_action: 0, completed: completedSalesToday.length });
       function getOpenOrderStatusLabel(order) {
         if (order.status === "needs_action") return L("Cần xử lí / Needs Action");
         if (order.status === "saving") return L("Đang lưu / Saving");
@@ -9286,6 +10476,7 @@
         if (order.id === activeOrder.id && activeOrderPicked) return L("Đang chọn / Selected");
         var status = getOrderWorkflowStatus(order);
         if (status === "held" || status === "preparing") return L("Tiếp tục / Continue");
+        if (status === "ready") return L("Thanh toán / Checkout");
         return L("Chọn đơn / Select Order");
       }
       function getCompletedSaleItemCount(sale) {
@@ -9305,6 +10496,17 @@
           })
         : filteredProducts
       ).slice(0, 40);
+      var kioskPublicUrl = (function () {
+        try {
+          var url = new URL(window.location.href);
+          url.search = "?kiosk=1";
+          url.hash = "";
+          return url.toString();
+        } catch (error) {
+          return window.location.origin + window.location.pathname + "?kiosk=1";
+        }
+      })();
+      var kioskQrUrl = "https://api.qrserver.com/v1/create-qr-code/?size=180x180&margin=10&data=" + encodeURIComponent(kioskPublicUrl);
       return html`
         <section className=${"pos-layout" + (activeOrderPicked ? "" : " is-order-overview")}>
           ${activeOrderPicked ? html`<aside className="pos-category-toolbar surface">
@@ -9388,6 +10590,15 @@
                 <button className="ghost-btn" onClick=${openOrderHistoryModal}>
                   ${L("Xem lịch sử đơn hàng / View Order History")}
                 </button>
+              </div>
+
+              <div className="kiosk-qr-card">
+                <div>
+                  <p className="eyebrow">${L("Kiosk QR / Kiosk QR")}</p>
+                  <h3>${L("Mã đặt món / Order QR")}</h3>
+                  <small>${kioskPublicUrl}</small>
+                </div>
+                <img src=${kioskQrUrl} alt="Kiosk QR" />
               </div>
 
               <div className="pos-status-filter">
@@ -9926,6 +11137,7 @@
       // Dynamic status donut gradient
       var statusColors = {
         completed: "#35b86b",
+        ready: "#35b86b",
         preparing: "#f05a16",
         held: "#a86a18",
         needs_action: "#bf4f39",
@@ -10005,6 +11217,14 @@
                 </label>
               </div>
             ` : null}
+
+            <div className="empty-state align-left dashboard-api-status">
+              ${dashboardApiLoading
+                ? L("Đang tải báo cáo từ API... / Loading report from API...")
+                : dashboardApiError
+                  ? L("Không tải được API, đang dùng dữ liệu cache local. / API unavailable, showing local cache.") + " " + dashboardApiError
+                  : L("Báo cáo đang đọc trực tiếp từ API theo khoảng ngày. / Report is loaded directly from the API for this date range.")}
+            </div>
 
             <div className="dashboard-kpi-grid">
               <article className="dashboard-kpi-card">
@@ -12987,6 +14207,21 @@
         { id: "general", label: "Chung / General" },
         { id: "invoice", label: "Hóa đơn / Invoice" }
       ];
+      if (currentUser && currentUser.role === "admin") {
+        settingsTabs.push({ id: "audit", label: "Audit / Audit" });
+      }
+      var auditEventLabels = {
+        login: "Đăng nhập / Login",
+        logout: "Đăng xuất / Logout",
+        open_shift: "Mở ca / Open shift",
+        close_shift: "Chốt ca / Close shift"
+      };
+      var auditSummaryCards = [
+        ["login", "Đăng nhập / Login"],
+        ["logout", "Đăng xuất / Logout"],
+        ["open_shift", "Mở ca / Open shift"],
+        ["close_shift", "Chốt ca / Close shift"]
+      ];
       var firebaseStatusLabelMap = {
         local: "Chỉ lưu máy này / Local only",
         incomplete: "Thiếu cấu hình / Incomplete config",
@@ -13112,6 +14347,95 @@
                   ${firebaseSyncError ? html`<div className="empty-state align-left danger-text">${firebaseSyncError}</div>` : null}
                 </section>
               </section>
+            ` : null}
+
+            ${settingsSection === "audit" && currentUser && currentUser.role === "admin" ? html`
+              <div className="stack-view settings-pane audit-admin-panel">
+                <section className="surface section-card">
+                  <div className="section-top">
+                    <div>
+                      <p className="eyebrow">${L("Nhật ký quản trị / Admin Audit")}</p>
+                      <h2 className="section-title">${L("Theo dõi đăng nhập và ca làm việc / Login and Shift Activity")}</h2>
+                    </div>
+                    <button type="button" className="ghost-btn" onClick=${loadAuditLogs} disabled=${auditLoading}>
+                      ${auditLoading ? L("Đang tải... / Loading...") : L("Tải lại / Refresh")}
+                    </button>
+                  </div>
+
+                  <form className="audit-filter-grid" onSubmit=${function (event) {
+                    event.preventDefault();
+                    loadAuditLogs();
+                  }}>
+                    <label className="field">
+                      <span>${L("Từ ngày / From")}</span>
+                      <input type="date" value=${auditStartDate} onInput=${function (event) { setAuditStartDate(event.target.value); }} />
+                    </label>
+                    <label className="field">
+                      <span>${L("Đến ngày / To")}</span>
+                      <input type="date" value=${auditEndDate} onInput=${function (event) { setAuditEndDate(event.target.value); }} />
+                    </label>
+                    <label className="field">
+                      <span>${L("Tài khoản / Account")}</span>
+                      <input value=${auditAccountFilter} onInput=${function (event) { setAuditAccountFilter(event.target.value); }} placeholder="cashier@shopprogram.local" />
+                    </label>
+                    <label className="field">
+                      <span>${L("Sự kiện / Event")}</span>
+                      <select value=${auditEventFilter} onChange=${function (event) { setAuditEventFilter(event.target.value); }}>
+                        <option value="">${L("Tất cả / All")}</option>
+                        <option value="login">${L(auditEventLabels.login)}</option>
+                        <option value="logout">${L(auditEventLabels.logout)}</option>
+                        <option value="open_shift">${L(auditEventLabels.open_shift)}</option>
+                        <option value="close_shift">${L(auditEventLabels.close_shift)}</option>
+                      </select>
+                    </label>
+                  </form>
+
+                  ${auditError ? html`<div className="empty-state align-left danger-text">${auditError}</div>` : null}
+
+                  <div className="audit-summary-grid">
+                    ${auditSummaryCards.map(function (item) {
+                      return html`
+                        <article key=${item[0]} className="metric-card surface">
+                          <span className="metric-label">${L(item[1])}</span>
+                          <strong>${Number(auditSummary[item[0]]) || 0}</strong>
+                        </article>
+                      `;
+                    })}
+                  </div>
+
+                  <div className="audit-table-wrap">
+                    <table className="audit-table">
+                      <thead>
+                        <tr>
+                          <th>${L("Thời gian / Time")}</th>
+                          <th>${L("Sự kiện / Event")}</th>
+                          <th>${L("Tài khoản / Account")}</th>
+                          <th>${L("Vai trò / Role")}</th>
+                          <th>${L("Ghi chú / Note")}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${auditLogs.length ? auditLogs.map(function (log) {
+                          var note = log.metadata && log.metadata.note ? String(log.metadata.note) : "";
+                          return html`
+                            <tr key=${log.id}>
+                              <td>${log.createdAt ? formatDateTime(log.createdAt) : "-"}</td>
+                              <td><span className="stock-badge">${L(auditEventLabels[log.eventType] || log.eventType)}</span></td>
+                              <td>${log.actorEmail || "-"}</td>
+                              <td>${log.actorRole || "-"}</td>
+                              <td>${note || "-"}</td>
+                            </tr>
+                          `;
+                        }) : html`
+                          <tr>
+                            <td colSpan="5" className="empty-state">${auditLoading ? L("Đang tải audit... / Loading audit...") : L("Chưa có audit log phù hợp. / No matching audit logs.")}</td>
+                          </tr>
+                        `}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              </div>
             ` : null}
 
             ${settingsSection === "invoice" ? html`
@@ -13657,6 +14981,44 @@
       `;
     }
 
+    if (publicKioskMode) {
+      return html`
+        <div className="app-shell kiosk-public-shell">
+          <header className="topbar surface kiosk-public-topbar">
+            <div className="topbar-main">
+              <div className="brand-block">
+                <div className="kiosk-brand-logo" aria-hidden="true">🍋</div>
+                <div>
+                  <h1 className="brand-name">${settings.brandDisplayName || settings.storeName || "Fruity Corner"}</h1>
+                  <p className="kiosk-brand-tagline">${settings.brandLine || "Fresh Fruit & Drinks"}</p>
+                </div>
+              </div>
+            </div>
+            <div className="lang-switch surface">
+              ${LANGUAGE_OPTIONS.map(function (item) {
+                return html`
+                  <button
+                    key=${item.id}
+                    className=${"lang-btn kiosk-flag-btn" + (language === item.id ? " is-active" : "")}
+                    title=${item.name || item.label}
+                    aria-label=${item.name || item.label}
+                    onClick=${function () { setLanguage(item.id); }}
+                  >
+                    <span>${item.flag || item.label}</span>
+                    <small>${item.label}</small>
+                  </button>
+                `;
+              })}
+            </div>
+          </header>
+
+          <main className="page-body kiosk-public-body">
+            ${renderKioskView()}
+          </main>
+        </div>
+      `;
+    }
+
     if (authLoading) {
       return html`
         <div style=${{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh", background: "#fffaf4", fontFamily: "sans-serif" }}>
@@ -13864,6 +15226,8 @@
 
         <main className="page-body">
           ${activeView === "pos" ? renderPosView() : null}
+          ${activeView === "barista" ? renderBaristaView() : null}
+          ${activeView === "kiosk" ? renderKioskView() : null}
           ${activeView === "dashboard" ? renderDashboardView() : null}
           ${activeView === "inventory" ? renderInventoryView() : null}
           ${activeView === "settings" ? renderSettingsView() : null}
@@ -13872,36 +15236,17 @@
         ${renderOrderHistoryModal()}
         ${renderCompletedSaleDetailModal()}
 
-        <!-- Toast stack — fixed bottom-right, stacks vertically, auto-dismiss -->
-        <div
-          aria-live="polite"
-          style=${{
-            position: "fixed", bottom: 18, right: 18, zIndex: 9999,
-            display: "flex", flexDirection: "column", gap: 8, pointerEvents: "none"
-          }}>
+        <!-- Toast stack: fixed bottom-right, stacks vertically, auto-dismiss -->
+        <div className="toast-stack" aria-live="polite">
           ${toasts.map(function (t) {
-            var bg = t.kind === "error"   ? "#fde2e0"
-                    : t.kind === "success" ? "#e6f7ea"
-                    :                        "#fff8e0";
-            var bd = t.kind === "error"   ? "#c0392b"
-                    : t.kind === "success" ? "#1f8a3a"
-                    :                        "#a47218";
             var icon = t.kind === "error"   ? "⚠"
                       : t.kind === "success" ? "✓"
                       :                        "ℹ";
             return html`
               <div
                 key=${t.id}
-                style=${{
-                  background: bg, color: bd, border: "1px solid " + bd,
-                  borderLeft: "4px solid " + bd,
-                  borderRadius: 10, padding: "10px 14px",
-                  fontWeight: 600, fontSize: 13,
-                  boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
-                  minWidth: 220, maxWidth: 360,
-                  display: "flex", gap: 8, alignItems: "center"
-                }}>
-                <span style=${{ fontSize: 16 }}>${icon}</span>
+                className=${"toast-card toast-" + (t.kind || "info")}>
+                <span className="toast-icon">${icon}</span>
                 <span>${t.text}</span>
               </div>
             `;
