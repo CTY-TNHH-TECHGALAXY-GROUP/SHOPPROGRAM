@@ -4880,24 +4880,56 @@
         if (itemName && productByName[itemName]) return productByName[itemName];
         return null;
       }
+      function getDashboardProductKey(product, item) {
+        if (product && product.id) return "product:" + String(product.id);
+        var itemId = item && (item.productId || item.product_id || item.id);
+        if (itemId) return "product:" + String(itemId);
+        var itemCode = item && (item.barcode || item.productBarcode || item.product_barcode || item.skuCode || item.sku_code || item.productSkuCode || item.product_sku_code);
+        if (itemCode) return "code:" + String(itemCode).trim().toLowerCase();
+        return "name:" + normalizeSearchText((product && product.name) || (item && (item.name || item.productName || item.product_name)));
+      }
+      function makeDashboardProductEntry(product, item) {
+        var category = (product && product.category) || (item && (item.category || item.category_id || item.product_category)) || "";
+        var name = (product && product.name) || (item && (item.name || item.productName || item.product_name)) || "";
+        return {
+          key: getDashboardProductKey(product, item),
+          name: name,
+          qty: 0,
+          revenue: 0,
+          image: (product && (product.imageIcon || product.image || product.imageUrl)) || (item && (item.image || item.imageUrl || item.product_image)) || "",
+          category: category
+        };
+      }
+      function ensureDashboardProductEntry(target, product, item) {
+        var key = getDashboardProductKey(product, item);
+        if (!key || key === "name:") return null;
+        if (!target[key]) target[key] = makeDashboardProductEntry(product, item);
+        return target[key];
+      }
+      function sortDashboardProducts(a, b) {
+        var qtyDelta = (Number(b.qty) || 0) - (Number(a.qty) || 0);
+        if (qtyDelta) return qtyDelta;
+        var revenueDelta = (Number(b.revenue) || 0) - (Number(a.revenue) || 0);
+        if (revenueDelta) return revenueDelta;
+        return String(a.name || "").localeCompare(String(b.name || ""));
+      }
+      products.forEach(function (product) {
+        if (!product || !product.name) return;
+        if (!categoryMatchesSelected(product.category, dashboardTopCategory, categories)) return;
+        ensureDashboardProductEntry(byProduct, product, null);
+      });
       paidSalesInRange.forEach(function (s) {
         (s.items || []).forEach(function (it) {
           var product = resolveDashboardProduct(it);
-          var key = (product && product.id) || it.productId || it.product_id || it.barcode || it.name;
-          var productCategory = product && product.category;
+          var productCategory = (product && product.category) || it.category || it.category_id || it.product_category || "";
           if (!categoryMatchesSelected(productCategory, dashboardTopCategory, categories)) return;
-          if (!byProduct[key]) byProduct[key] = {
-            name: (product && product.name) || it.name || it.productName || it.product_name || "",
-            qty: 0,
-            revenue: 0,
-            image: product && (product.imageIcon || product.image || product.imageUrl),
-            category: productCategory || ""
-          };
-          byProduct[key].qty += Number(it.qty) || 0;
-          byProduct[key].revenue += (Number(it.qty) || 0) * (Number(it.price) || 0);
+          var entry = ensureDashboardProductEntry(byProduct, product, it);
+          if (!entry) return;
+          entry.qty += Number(it.qty) || 0;
+          entry.revenue += (Number(it.qty) || 0) * (Number(it.price) || 0);
         });
       });
-      var topProducts = Object.values(byProduct).sort(function (a, b) { return b.qty - a.qty; }).slice(0, 6);
+      var topProducts = Object.values(byProduct).sort(sortDashboardProducts);
       var statusMap = {};
       function addStatus(id, label, tone, amount) {
         if (!statusMap[id]) {
@@ -5090,21 +5122,27 @@
           };
         });
 
-        var apiTopProducts = (dashboardApiData.topProducts || []).map(function (row) {
+        var apiByProduct = {};
+        products.forEach(function (product) {
+          if (!product || !product.name) return;
+          if (!categoryMatchesSelected(product.category, dashboardTopCategory, categories)) return;
+          ensureDashboardProductEntry(apiByProduct, product, null);
+        });
+        (dashboardApiData.topProducts || []).forEach(function (row) {
           var product = resolveDashboardProduct(row);
           var productCategory = (product && product.category) || row.product_category || row.category_id || row.category || "";
-          return {
-            name: row.product_name || (product && product.name) || "",
-            qty: Number(row.qty) || 0,
-            revenue: Number(row.revenue) || 0,
-            image: (product && (product.imageIcon || product.image || product.imageUrl)) || row.product_image || "",
-            category: productCategory
-          };
-        }).filter(function (item) {
-          if (!item.name) return false;
-          if (!categoryMatchesSelected(item.category, dashboardTopCategory, categories)) return false;
-          return true;
-        }).slice(0, 6);
+          if (!categoryMatchesSelected(productCategory, dashboardTopCategory, categories)) return;
+          var entry = ensureDashboardProductEntry(apiByProduct, product, row);
+          if (!entry) return;
+          if (!entry.name && row.product_name) entry.name = row.product_name;
+          if (!entry.image && row.product_image) entry.image = row.product_image;
+          if (!entry.category && productCategory) entry.category = productCategory;
+          entry.qty += Number(row.qty) || 0;
+          entry.revenue += Number(row.revenue) || 0;
+        });
+        var apiTopProducts = Object.values(apiByProduct).filter(function (item) {
+          return !!item.name;
+        }).sort(sortDashboardProducts);
 
         return {
           range: range,
@@ -11373,7 +11411,7 @@
                 <div className="dashboard-product-podium">
                   ${dashboardMetrics.topProducts.slice(0, 3).map(function (p, i) {
                     return html`
-                      <article className="dashboard-product-tile" key=${p.name + i}>
+                      <article className="dashboard-product-tile" key=${p.key || p.name + i}>
                         <span className="dashboard-rank">${i + 1}</span>
                         <div className="dashboard-product-image">
                           ${isProductImageUrl(p.image) ? html`<img src=${p.image} alt=${p.name} />` : html`<span>${p.image || "🛒"}</span>`}
@@ -11393,7 +11431,7 @@
                 <div className="list-stack compact-list">
                   ${dashboardMetrics.topProducts.slice(3).map(function (p, i) {
                     return html`
-                      <article className="list-row" key=${p.name + i}>
+                      <article className="list-row" key=${p.key || p.name + i}>
                         <div><strong>#${i + 4} ${p.name}</strong><p>${formatQuantity(p.qty, 2)} ${L("đã bán / sold")}</p></div>
                         <strong>${formatCurrency(p.revenue)}</strong>
                       </article>
