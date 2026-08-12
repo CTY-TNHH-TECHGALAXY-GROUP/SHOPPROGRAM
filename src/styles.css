@@ -107,8 +107,8 @@ textarea:focus {
 .topbar {
   border-radius: var(--radius-xl);
   padding: 18px 20px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 520px) auto;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 16px;
   position: sticky;
@@ -120,7 +120,18 @@ textarea:focus {
   display: flex;
   align-items: center;
   gap: 14px;
+  flex: 1 1 250px;
   min-width: 0;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 1 1 430px;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .menu-btn {
@@ -150,10 +161,17 @@ textarea:focus {
   min-width: 0;
 }
 
+.brand-block > div {
+  min-width: 0;
+}
+
 .brand-name {
   margin: 2px 0 0;
   font-family: "Space Grotesk", sans-serif;
   font-size: clamp(1.4rem, 2.4vw, 2.2rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .eyebrow {
@@ -166,6 +184,8 @@ textarea:focus {
 
 .search-box {
   position: relative;
+  flex: 1 1 320px;
+  max-width: 520px;
   min-width: 0;
 }
 
@@ -211,6 +231,7 @@ textarea:focus {
 }
 
 .lang-switch {
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -220,6 +241,8 @@ textarea:focus {
 }
 
 .user-session-pill {
+  flex: 0 1 auto;
+  min-width: 0;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -235,6 +258,30 @@ textarea:focus {
 .user-session-name {
   color: var(--muted);
   font-weight: 800;
+  white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.low-stock-pill {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border: 1px solid #f5b893;
+  background: #fff1eb;
+  color: #a4451a;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.low-stock-pill span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -2321,10 +2368,12 @@ textarea:focus {
 
 @media (max-width: 960px) {
   .topbar {
-    grid-template-columns: 1fr;
+    align-items: stretch;
   }
 
+  .topbar-main,
   .search-box,
+  .topbar-actions,
   .lang-switch,
   .user-session-pill {
     width: 100%;
@@ -2567,10 +2616,12 @@ textarea:focus {
 
 @media (max-width: 960px) {
   .topbar {
-    grid-template-columns: 1fr;
+    align-items: stretch;
   }
 
+  .topbar-main,
   .search-box,
+  .topbar-actions,
   .lang-switch {
     width: 100%;
   }

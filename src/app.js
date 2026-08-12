@@ -13474,14 +13474,13 @@
             ` : null}
           </div>
 
-          <div className="topbar-actions" style=${{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <div className="topbar-actions">
             ${currentUser ? html`
               <div
-                className="lang-switch surface"
-                style=${{ display: "inline-flex", alignItems: "center", gap: 8, padding: "6px 10px" }}
+                className="user-session-pill surface"
               >
                 <span style=${{ fontSize: 14 }}>👤</span>
-                <small style=${{ color: "#7b6b5d", fontWeight: "bold" }}>
+                <small className="user-session-name">
                   ${currentUser.email.split("@")[0]} (${currentUser.role})
                 </small>
                 ${activeShift ? html`
@@ -13508,16 +13507,10 @@
           ${lowStockCount > 0 ? html`
             <button
               type="button"
-              className="lang-switch surface"
+              className="lang-switch low-stock-pill surface"
               title=${lowStockAlerts.slice(0, 8).map(function (item) {
                 return item.label + " (" + formatQuantity(item.qty, 2) + "/" + formatQuantity(item.min, 2) + (item.unit ? " " + item.unit : "") + ")";
               }).join("\n")}
-              style=${{
-                display: "inline-flex", alignItems: "center", gap: 8,
-                padding: "6px 12px",
-                background: "#fff1eb", border: "1px solid #f5b893",
-                color: "#a4451a", cursor: "pointer", fontWeight: 600
-              }}
               onClick=${function () {
                 setActiveView("inventory");
                 setInventorySection("stock");
