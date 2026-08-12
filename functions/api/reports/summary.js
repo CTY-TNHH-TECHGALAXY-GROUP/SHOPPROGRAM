@@ -56,7 +56,7 @@ export const onRequestGet = async ({ env, request }) => {
      WHERE s.created_at BETWEEN ? AND ?
        AND (s.payment_status IS NULL OR s.payment_status = '' OR s.payment_status = 'paid')
        AND s.order_status IN ('completed', 'preparing', 'ready')
-     GROUP BY product_key, product_id, product_name, product_category, product_image, product_barcode, product_sku_code
+     GROUP BY si.product_id, p.id, si.product_name, p.name, p.category_id, p.image, p.barcode, p.sku_code
      ORDER BY qty DESC`
   ).bind(from, to).all();
 
