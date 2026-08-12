@@ -9830,7 +9830,7 @@
       var imageUrl = product && product.imageUrl;
       var icon = imageUrl ? "" : ((product && (product.imageIcon || product.image)) || "🍊");
       return html`
-        <div className="pos-product-media">
+        <div className=${"pos-product-media" + (imageUrl ? " product-media-fit" : "")}>
           ${imageUrl ? html`
             <img
               src=${imageUrl}
