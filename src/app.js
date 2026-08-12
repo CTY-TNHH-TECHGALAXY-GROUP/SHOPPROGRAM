@@ -4929,7 +4929,9 @@
           entry.revenue += (Number(it.qty) || 0) * (Number(it.price) || 0);
         });
       });
-      var topProducts = Object.values(byProduct).sort(sortDashboardProducts);
+      var topProducts = Object.values(byProduct).filter(function (item) {
+        return (Number(item.qty) || 0) > 0;
+      }).sort(sortDashboardProducts);
       var statusMap = {};
       function addStatus(id, label, tone, amount) {
         if (!statusMap[id]) {
@@ -5141,7 +5143,7 @@
           entry.revenue += Number(row.revenue) || 0;
         });
         var apiTopProducts = Object.values(apiByProduct).filter(function (item) {
-          return !!item.name;
+          return !!item.name && (Number(item.qty) || 0) > 0;
         }).sort(sortDashboardProducts);
 
         return {
