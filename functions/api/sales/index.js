@@ -86,7 +86,8 @@ export const onRequestGet = async ({ env, request }) => {
   const url = new URL(request.url);
   const from = Number(url.searchParams.get("from"));
   const to = Number(url.searchParams.get("to"));
-  const limit = Math.min(Number(url.searchParams.get("limit")) || 100, 1000);
+  const all = url.searchParams.get("all") === "1";
+  const limit = all ? 100000 : Math.min(Number(url.searchParams.get("limit")) || 100, 20000);
   const where = [];
   const binds = [];
   if (from) { where.push("created_at >= ?"); binds.push(from); }
@@ -103,7 +104,26 @@ export const onRequestGet = async ({ env, request }) => {
              FROM sale_items si
              LEFT JOIN products p ON p.id = si.product_id
              WHERE si.sale_id = s.id
-           ), 0) AS item_count
+           ), 0) AS item_count,
+           (
+             SELECT json_group_array(
+               json_object(
+                 'id', si.id,
+                 'productId', si.product_id,
+                 'name', si.product_name,
+                 'qty', si.qty,
+                 'price', si.unit_price,
+                 'unit', COALESCE(pi.unit, ''),
+                 'addonsJson', si.addons_json,
+                 'addonsTotal', si.addons_total,
+                 'discountAmount', COALESCE(si.discount_amount, 0),
+                 'lineTotal', si.line_total
+               )
+             )
+             FROM sale_items si
+             LEFT JOIN products pi ON pi.id = si.product_id
+             WHERE si.sale_id = s.id
+           ) AS items_json
     FROM sales s
     ${where.length ? "WHERE " + where.join(" AND ") : ""}
     ORDER BY created_at DESC

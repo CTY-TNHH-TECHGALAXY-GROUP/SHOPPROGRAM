@@ -68,6 +68,7 @@ export const onRequestGet = async ({ env, request }) => {
            s.id, s.order_id, s.created_at, s.total, s.payment_method, s.customer_name,
            s.subtotal, s.vat_amount, s.discount, s.paid, s.change_amount,
            s.cashier_name, s.payment_status, s.order_status, s.note,
+           COALESCE(s.updated_at, s.created_at) AS updated_at,
            COALESCE((
              SELECT SUM(
                CASE
@@ -98,9 +99,11 @@ export const onRequestGet = async ({ env, request }) => {
              WHERE si.sale_id = s.id
            ) as items_json
          FROM sales s 
-         WHERE s.order_status = 'held' OR s.created_at > ? 
-         ORDER BY s.created_at DESC LIMIT 1000`
-      ).bind(since).all(),
+         WHERE s.order_status IN ('new', 'held', 'preparing', 'ready', 'needs_action')
+            OR COALESCE(s.updated_at, s.created_at) > ?
+            OR (? = 1 AND s.order_status IN ('completed', 'cancelled'))
+         ORDER BY s.created_at DESC`
+      ).bind(since, since ? 0 : 1).all(),
 
       env.DB.prepare(
         `SELECT id, name, output_component_id, planned_output_qty, output_unit,

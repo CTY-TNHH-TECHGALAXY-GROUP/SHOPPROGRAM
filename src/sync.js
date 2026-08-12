@@ -26,7 +26,7 @@
   var OUTBOX_KEY    = "shopflow-outbox";
   var LAST_SYNC_KEY = "shopflow-last-sync-at";
   var SCHEMA_VERSION_KEY = "shopflow-sync-schema-version";
-  var SCHEMA_VERSION = "2026-06-19-sale-items-v2";
+  var SCHEMA_VERSION = "2026-08-12-dashboard-stock-report-v1";
   var API_BASE      = "/api";
 
   // ---------- storage helpers ----------

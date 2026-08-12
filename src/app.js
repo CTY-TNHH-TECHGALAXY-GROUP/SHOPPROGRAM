@@ -145,7 +145,7 @@
   repairKnownLocalPaymentIssues();
 
   // Bump this version to force a full re-sync for all clients when data structure changes
-  var CACHE_VERSION = 9;
+  var CACHE_VERSION = 10;
   if (window.localStorage && window.localStorage.getItem("shopflow-cache-version") !== String(CACHE_VERSION)) {
     window.localStorage.removeItem("shopflow-last-sync-at");
     window.localStorage.removeItem("shopflow-categories");
@@ -1580,7 +1580,7 @@
     var paymentStatus = String((sale && (sale.paymentStatus || sale.payment_status)) || "paid").toLowerCase();
     var syncStatus = String((sale && (sale.syncStatus || sale.sync_status)) || "").toLowerCase();
     if (total <= 0) return false;
-    if (orderStatus && orderStatus !== "completed") return false;
+    if (["completed", "preparing", "ready"].indexOf(orderStatus) === -1) return false;
     if (paymentStatus && paymentStatus !== "paid") return false;
     if (syncStatus !== "synced") return false;
     if (!isServerSaleRecord(sale)) return false;
@@ -1908,8 +1908,31 @@
     return netQty / usableRate;
   }
 
-  function isProductImageUrl(value) {
+  function getGoogleDriveFileId(value) {
     var imageValue = String(value || "").trim();
+    if (!imageValue) return "";
+    var fileMatch = imageValue.match(/drive\.google\.com\/file\/d\/([^/?#]+)/i);
+    if (fileMatch && fileMatch[1]) return fileMatch[1];
+    try {
+      var parsedUrl = new URL(imageValue);
+      if (!/drive\.google\.com$/i.test(parsedUrl.hostname)) return "";
+      return parsedUrl.searchParams.get("id") || "";
+    } catch (err) {
+      return "";
+    }
+  }
+
+  function normalizeProductImageUrl(value) {
+    var imageValue = String(value || "").trim();
+    var driveFileId = getGoogleDriveFileId(imageValue);
+    if (driveFileId) {
+      return "https://drive.google.com/thumbnail?id=" + encodeURIComponent(driveFileId) + "&sz=w1000";
+    }
+    return imageValue;
+  }
+
+  function isProductImageUrl(value) {
+    var imageValue = normalizeProductImageUrl(value);
     return /^(https?:\/\/|data:image\/|blob:|\.\/|\/|assets\/|images\/)/i.test(imageValue);
   }
 
@@ -1927,15 +1950,16 @@
       ? explicitInventoryMode
       : "";
     var rawImage = baseProduct.imageUrl || baseProduct.image_url || baseProduct.photoUrl || baseProduct.photo_url || baseProduct.image || "";
+    var normalizedImageUrl = isProductImageUrl(rawImage) ? normalizeProductImageUrl(rawImage) : "";
     var normalizedBarcode = getScannableBarcode(
       baseProduct.barcode,
       [baseProduct.id, baseProduct.name, baseProduct.category, baseProduct.barcode].join("|")
     );
     return Object.assign({}, baseProduct, {
       barcode: normalizedBarcode,
-      image: rawImage,
-      imageUrl: isProductImageUrl(rawImage) ? rawImage : "",
-      imageIcon: isProductImageUrl(rawImage) ? "" : (rawImage || "🍊"),
+      image: normalizedImageUrl || rawImage,
+      imageUrl: normalizedImageUrl,
+      imageIcon: normalizedImageUrl ? "" : (rawImage || "🍊"),
       componentIds: Array.isArray(baseProduct.componentIds)
         ? baseProduct.componentIds.map(normalizeRecipeEntry).filter(function (entry) { return entry.id; })
         : [],
@@ -3178,6 +3202,7 @@
     var [dashboardCustomFrom, setDashboardCustomFrom] = useState("");
     var [dashboardCustomTo, setDashboardCustomTo] = useState("");
     var [dashboardRevenueMode, setDashboardRevenueMode] = useState("chart");
+    var [dashboardTopCategory, setDashboardTopCategory] = useState("all");
     // POS category sidebar: which parent categories are currently expanded.
     // Object map { [parentId]: true }. Starts empty (all collapsed).
     var [expandedCategories, setExpandedCategories] = useState({});
@@ -3789,6 +3814,13 @@
             else if (parsedStatus === "needs_action") status = "needs_action";
             else if (parsedStatus === "ready") status = "ready";
           }
+          if (!match) {
+            if (row.order_status === "preparing") status = "preparing";
+            else if (row.order_status === "held") status = "held";
+            else if (row.order_status === "ready") status = "ready";
+            else if (row.order_status === "needs_action") status = "needs_action";
+            else status = "open";
+          }
           var cleanedNote = note.replace(/^\[status:[a-zA-Z0-9_-]+\]\s*/, "");
           
           return {
@@ -4016,7 +4048,9 @@
               if (!isKnownTechnicalTestSale(s)) byId[s.id] = s;
             });
             data.recentSales.filter(function (row) {
-              return !isKnownTechnicalTestSale(row) && row.order_status === "completed";
+              return !isKnownTechnicalTestSale(row) &&
+                row.payment_status === "paid" &&
+                ["completed", "preparing", "ready"].indexOf(row.order_status) !== -1;
             }).forEach(function (row) {
               var items = [];
               if (row.items_json) {
@@ -4035,6 +4069,7 @@
                         unit: it.unit || "",
                         addonsJson: it.addonsJson || it.addons_json,
                         addonsTotal: Number(it.addonsTotal || it.addons_total) || 0,
+                        discountAmount: Number(it.discountAmount || it.discount_amount) || 0,
                         lineTotal: Number(it.lineTotal || it.line_total) || 0
                       };
                     });
@@ -4073,7 +4108,9 @@
           });
 
           // ----- Sync Open/Held Orders -----
-          var heldSales = data.recentSales.filter(function (row) { return row.order_status === "held" || row.order_status === "open"; });
+          var heldSales = data.recentSales.filter(function (row) {
+            return ["new", "held", "preparing", "ready", "needs_action", "open"].indexOf(row.order_status) !== -1;
+          });
           var nonHeldSales = data.recentSales.filter(function (row) { return row.order_status === "completed" || row.order_status === "cancelled"; });
 
           var pulledOpenOrders = heldSales.map(mapHeldSaleToOrder);
@@ -4350,6 +4387,12 @@
         setSelectedCategory("all");
       }
     }, [categories, selectedCategory]);
+
+    useEffect(function () {
+      if (dashboardTopCategory !== "all" && !categories.some(function (category) { return category.id === dashboardTopCategory; })) {
+        setDashboardTopCategory("all");
+      }
+    }, [categories, dashboardTopCategory]);
 
     useEffect(function () {
       if (settingsSection === "product") {
@@ -4739,7 +4782,16 @@
         (s.items || []).forEach(function (it) {
           var key = it.productId || it.name;
           var product = products.find(function (p) { return p.id === it.productId; });
-          if (!byProduct[key]) byProduct[key] = { name: it.name, qty: 0, revenue: 0, image: product && (product.imageIcon || product.image || product.imageUrl) };
+          if (!categoryMatchesSelected(product ? product.category : "", dashboardTopCategory, categories)) return;
+          if (!byProduct[key]) {
+            byProduct[key] = {
+              name: it.name,
+              qty: 0,
+              revenue: 0,
+              category: product ? product.category : "",
+              image: product && (product.imageIcon || product.image || product.imageUrl)
+            };
+          }
           byProduct[key].qty += Number(it.qty) || 0;
           byProduct[key].revenue += (Number(it.qty) || 0) * (Number(it.price) || 0);
         });
@@ -4840,7 +4892,7 @@
         recentOrders: recentOrders,
         recentSales: clone(salesInRange).sort(function (a, b) { return b.createdAt - a.createdAt; })
       };
-    }, [products, sales, orders, purchases, addOns, dashboardRange, dashboardCustomFrom, dashboardCustomTo, lowStockAlerts]);
+    }, [products, categories, sales, orders, purchases, addOns, dashboardRange, dashboardCustomFrom, dashboardCustomTo, dashboardTopCategory, lowStockAlerts]);
 
     var inventoryTabs = [
       { id: "stock", label: "Kiểm hàng tồn kho / Stock Check" },
@@ -8478,7 +8530,10 @@
       var draftCategory = categories.find(function (category) {
         return category.id === productDraft.category;
       });
-      var productImageValue = String(productDraft.image || "").trim() || (draftCategory && draftCategory.icon) || "🛒";
+      var typedImageValue = String(productDraft.image || "").trim();
+      var productImageValue = typedImageValue
+        ? normalizeProductImageUrl(typedImageValue)
+        : ((draftCategory && draftCategory.icon) || "🛒");
 
       // Validate any user-typed ID — both for new products AND when
       // editing existing (rename).
@@ -9943,6 +9998,9 @@
         if (tone === "warning") return { background: "#fff3d8", color: "#a86a18" };
         return { background: "#eaf2ff", color: "#2d68d8" };
       }
+      var dashboardTopCategoryOptions = categoryOptions && categoryOptions.length
+        ? categoryOptions
+        : [FILTER_ALL_CATEGORY];
       return html`
         <section className="stack-view dashboard-shell">
           <section className="surface section-card dashboard-control-card">
@@ -10075,10 +10133,22 @@
             </article>
 
             <article className="surface section-card dashboard-top-products">
-              <div className="section-top">
+              <div className="section-top dashboard-top-products-head">
                 <div>
                   <h2 className="section-title">${L("Sản phẩm bán chạy / Best Sellers")}</h2>
                 </div>
+                <label className="dashboard-category-filter">
+                  <span>${L("Danh mục / Category")}</span>
+                  <select
+                    value=${dashboardTopCategory}
+                    onChange=${function (event) { setDashboardTopCategory(event.target.value); }}
+                    aria-label=${L("Lọc sản phẩm bán chạy theo danh mục / Filter best sellers by category")}
+                  >
+                    ${dashboardTopCategoryOptions.map(function (category) {
+                      return html`<option key=${category.id} value=${category.id}>${L(category.label)}</option>`;
+                    })}
+                  </select>
+                </label>
               </div>
               ${dashboardMetrics.topProducts.length ? html`
                 <div className="dashboard-product-podium">
@@ -11106,7 +11176,7 @@
                       </label>
                       <div className="product-image-preview">
                         ${isProductImageUrl(productDraft.image)
-                          ? html`<img src=${productDraft.image} alt=${productDraft.name || ""} />`
+                          ? html`<img src=${normalizeProductImageUrl(productDraft.image)} alt=${productDraft.name || ""} />`
                           : html`<span>${productDraft.image || (selectedProductCategory && selectedProductCategory.icon) || "🛒"}</span>`}
                         <small>${L("Preview POS / POS Preview")}</small>
                       </div>

@@ -1,5 +1,13 @@
 import { json } from "../_lib.js";
 
+const SHOP_TZ_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+function shopDateKey(timestamp) {
+  const date = new Date((Number(timestamp) || 0) + SHOP_TZ_OFFSET_MS);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toISOString().slice(0, 10);
+}
+
 // GET /api/reports/summary?from=&to=
 // Returns revenue, gross profit, order count, top products,
 // and a per-day revenue breakdown for charting.
@@ -15,7 +23,8 @@ export const onRequestGet = async ({ env, request }) => {
             COALESCE(SUM(discount), 0) AS discount
      FROM sales
      WHERE created_at BETWEEN ? AND ?
-       AND order_status = 'completed'`
+       AND payment_status = 'paid'
+       AND order_status IN ('preparing', 'ready', 'completed')`
   ).bind(from, to).first();
 
   const profit = await env.DB.prepare(
@@ -24,7 +33,8 @@ export const onRequestGet = async ({ env, request }) => {
      FROM sale_items si
      JOIN sales s ON s.id = si.sale_id
      WHERE s.created_at BETWEEN ? AND ?
-       AND s.order_status = 'completed'`
+       AND s.payment_status = 'paid'
+       AND s.order_status IN ('preparing', 'ready', 'completed')`
   ).bind(from, to).first();
 
   const { results: topProducts } = await env.DB.prepare(
@@ -34,22 +44,31 @@ export const onRequestGet = async ({ env, request }) => {
      FROM sale_items si
      JOIN sales s ON s.id = si.sale_id
      WHERE s.created_at BETWEEN ? AND ?
-       AND s.order_status = 'completed'
+       AND s.payment_status = 'paid'
+       AND s.order_status IN ('preparing', 'ready', 'completed')
      GROUP BY si.product_id, si.product_name
      ORDER BY qty DESC
      LIMIT 10`
   ).bind(from, to).all();
 
-  const { results: byDay } = await env.DB.prepare(
-    `SELECT strftime('%Y-%m-%d', created_at/1000, 'unixepoch') AS day,
-            COUNT(*) AS orders,
-            COALESCE(SUM(total), 0) AS revenue
+  const { results: dayRows } = await env.DB.prepare(
+    `SELECT created_at, total
      FROM sales
      WHERE created_at BETWEEN ? AND ?
-       AND order_status = 'completed'
-     GROUP BY day
-     ORDER BY day`
+       AND payment_status = 'paid'
+       AND order_status IN ('preparing', 'ready', 'completed')
+     ORDER BY created_at`
   ).bind(from, to).all();
+  const byDayMap = new Map();
+  for (const row of dayRows || []) {
+    const day = shopDateKey(row.created_at);
+    if (!day) continue;
+    const current = byDayMap.get(day) || { day, orders: 0, revenue: 0 };
+    current.orders += 1;
+    current.revenue += Number(row.total) || 0;
+    byDayMap.set(day, current);
+  }
+  const byDay = Array.from(byDayMap.values()).sort((a, b) => a.day.localeCompare(b.day));
 
   const { results: byPaymentMethod } = await env.DB.prepare(
     `SELECT payment_method,
@@ -72,7 +91,8 @@ export const onRequestGet = async ({ env, request }) => {
               END AS payment_method
        FROM sales
        WHERE created_at BETWEEN ? AND ?
-         AND order_status = 'completed'
+         AND payment_status = 'paid'
+         AND order_status IN ('preparing', 'ready', 'completed')
      )
      GROUP BY payment_method
      ORDER BY revenue DESC`
@@ -90,7 +110,7 @@ export const onRequestGet = async ({ env, request }) => {
       cogs:        Number(profit.cogs)         || 0,
     },
     topProducts: topProducts || [],
-    byDay: byDay || [],
+    byDay,
     byPaymentMethod: byPaymentMethod || [],
   });
 };
