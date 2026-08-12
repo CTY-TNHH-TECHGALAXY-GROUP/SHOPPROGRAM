@@ -10089,9 +10089,9 @@
             </section>
           ` : null}
 
-          <section className="dashboard-grid-main">
+          <section className="dashboard-revenue-row">
             <article className="surface section-card dashboard-revenue-card">
-              <div className="section-top">
+              <div className="section-top dashboard-revenue-head">
                 <div>
                   <h2 className="section-title">${L("Doanh thu theo thời gian / Revenue Trend")}</h2>
                   <p className="muted-copy">${L(dashboardMetrics.range.label)}</p>
@@ -10131,7 +10131,9 @@
                 `}
               ` : html`<div className="empty-state">${L("Chưa có doanh thu trong khoảng này. / No revenue in this range.")}</div>`}
             </article>
+          </section>
 
+          <section className="dashboard-grid-main">
             <article className="surface section-card dashboard-top-products">
               <div className="section-top dashboard-top-products-head">
                 <div>
