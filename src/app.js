@@ -4874,7 +4874,7 @@
       function resolveDashboardProduct(item) {
         var productId = item && (item.productId || item.product_id);
         if (productId && productById[String(productId)]) return productById[String(productId)];
-        var itemCode = String((item && (item.barcode || item.skuCode || item.sku_code)) || "").trim().toLowerCase();
+        var itemCode = String((item && (item.barcode || item.productBarcode || item.product_barcode || item.skuCode || item.sku_code || item.productSkuCode || item.product_sku_code)) || "").trim().toLowerCase();
         if (itemCode && productByCode[itemCode]) return productByCode[itemCode];
         var itemName = normalizeSearchText(item && (item.name || item.productName || item.product_name));
         if (itemName && productByName[itemName]) return productByName[itemName];
@@ -5090,18 +5090,15 @@
           };
         });
 
-        var productLookup = {};
-        products.forEach(function (product) {
-          if (product && product.id) productLookup[String(product.id)] = product;
-        });
         var apiTopProducts = (dashboardApiData.topProducts || []).map(function (row) {
-          var product = productLookup[String(row.product_id || "")] || null;
+          var product = resolveDashboardProduct(row);
+          var productCategory = (product && product.category) || row.product_category || row.category_id || row.category || "";
           return {
             name: row.product_name || (product && product.name) || "",
             qty: Number(row.qty) || 0,
             revenue: Number(row.revenue) || 0,
-            image: product && (product.imageIcon || product.image || product.imageUrl),
-            category: product && product.category
+            image: (product && (product.imageIcon || product.image || product.imageUrl)) || row.product_image || "",
+            category: productCategory
           };
         }).filter(function (item) {
           if (!item.name) return false;
@@ -6914,6 +6911,7 @@
       if (!completedSaleDetail) return null;
       var sale = completedSaleDetail.sale || {};
       var items = completedSaleDetail.items || [];
+      var returningToHistory = orderHistoryModalOpen;
       return html`
         <div className="detail-modal-backdrop" role="presentation" onClick=${function () { setCompletedSaleDetail(null); }}>
           <section className="detail-modal surface completed-sale-modal" role="dialog" aria-modal="true" onClick=${function (event) { event.stopPropagation(); }}>
@@ -6925,7 +6923,9 @@
               </div>
               <div className="row-actions">
                 <button className="ghost-btn" onClick=${function () { reprintSale(sale, false); }}>${L("Xem hóa đơn / Preview Receipt")}</button>
-                <button className="ghost-btn" onClick=${function () { setCompletedSaleDetail(null); }}>${L("Đóng / Close")}</button>
+                <button className="ghost-btn" onClick=${function () { setCompletedSaleDetail(null); }}>
+                  ${returningToHistory ? L("Quay lại lịch sử / Back to History") : L("Đóng / Close")}
+                </button>
               </div>
             </div>
 
@@ -7073,7 +7073,6 @@
                     <span className="dashboard-status-chip order-history-status">${L("Hoàn thành / Completed")}</span>
                     <div className="row-actions">
                       <button className="ghost-btn" onClick=${function () {
-                        closeOrderHistoryModal();
                         openCompletedSaleDetail(sale);
                       }}>${L("Xem / View")}</button>
                       <button className="ghost-btn" onClick=${function () { reprintSale(sale, false); }}>${L("In lại / Reprint")}</button>
@@ -11286,9 +11285,9 @@
             </section>
           ` : null}
 
-          <section className="dashboard-grid-main">
+          <section className="dashboard-revenue-row">
             <article className="surface section-card dashboard-revenue-card">
-              <div className="section-top">
+              <div className="section-top dashboard-revenue-head">
                 <div>
                   <h2 className="section-title">${L("Doanh thu theo thời gian / Revenue Trend")}</h2>
                   <p className="muted-copy">${L(dashboardMetrics.range.label)}</p>
@@ -11328,7 +11327,9 @@
                 `}
               ` : html`<div className="empty-state">${L("Chưa có doanh thu trong khoảng này. / No revenue in this range.")}</div>`}
             </article>
+          </section>
 
+          <section className="dashboard-grid-main">
             <article className="surface section-card dashboard-top-products">
               <div className="section-top">
                 <div>

@@ -1,6 +1,10 @@
 import { json } from "../_lib.js";
 
 const SHOP_TZ_OFFSET_MS = 7 * 60 * 60 * 1000;
+const PAID_REVENUE_FILTER = `
+  AND (payment_status IS NULL OR payment_status = '' OR payment_status = 'paid')
+  AND order_status IN ('completed', 'preparing', 'ready')
+`;
 
 function shopDateKey(timestamp) {
   const date = new Date((Number(timestamp) || 0) + SHOP_TZ_OFFSET_MS);
@@ -23,7 +27,7 @@ export const onRequestGet = async ({ env, request }) => {
             COALESCE(SUM(discount), 0) AS discount
      FROM sales
      WHERE created_at BETWEEN ? AND ?
-       AND order_status = 'completed'`
+       ${PAID_REVENUE_FILTER}`
   ).bind(from, to).first();
 
   const profit = await env.DB.prepare(
@@ -32,27 +36,36 @@ export const onRequestGet = async ({ env, request }) => {
      FROM sale_items si
      JOIN sales s ON s.id = si.sale_id
      WHERE s.created_at BETWEEN ? AND ?
-       AND s.order_status = 'completed'`
+       AND (s.payment_status IS NULL OR s.payment_status = '' OR s.payment_status = 'paid')
+       AND s.order_status IN ('completed', 'preparing', 'ready')`
   ).bind(from, to).first();
 
   const { results: topProducts } = await env.DB.prepare(
-    `SELECT si.product_id, si.product_name,
+    `SELECT COALESCE(NULLIF(si.product_id, ''), p.id, si.product_name) AS product_key,
+            COALESCE(NULLIF(si.product_id, ''), p.id) AS product_id,
+            COALESCE(p.name, si.product_name) AS product_name,
+            p.category_id AS product_category,
+            p.image AS product_image,
+            p.barcode AS product_barcode,
+            p.sku_code AS product_sku_code,
             SUM(si.qty) AS qty,
             SUM(si.line_total) AS revenue
      FROM sale_items si
      JOIN sales s ON s.id = si.sale_id
+     LEFT JOIN products p ON p.id = si.product_id
      WHERE s.created_at BETWEEN ? AND ?
-       AND s.order_status = 'completed'
-     GROUP BY si.product_id, si.product_name
+       AND (s.payment_status IS NULL OR s.payment_status = '' OR s.payment_status = 'paid')
+       AND s.order_status IN ('completed', 'preparing', 'ready')
+     GROUP BY product_key, product_id, product_name, product_category, product_image, product_barcode, product_sku_code
      ORDER BY qty DESC
-     LIMIT 10`
+     LIMIT 200`
   ).bind(from, to).all();
 
   const { results: dayRows } = await env.DB.prepare(
     `SELECT created_at, total
      FROM sales
      WHERE created_at BETWEEN ? AND ?
-       AND order_status = 'completed'
+       ${PAID_REVENUE_FILTER}
      ORDER BY created_at`
   ).bind(from, to).all();
   const byDayMap = new Map();
@@ -87,7 +100,7 @@ export const onRequestGet = async ({ env, request }) => {
               END AS payment_method
        FROM sales
        WHERE created_at BETWEEN ? AND ?
-         AND order_status = 'completed'
+         ${PAID_REVENUE_FILTER}
      )
      GROUP BY payment_method
      ORDER BY revenue DESC`
