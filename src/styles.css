@@ -604,6 +604,7 @@ textarea:focus {
   border-radius: 16px;
   display: grid;
   place-items: center;
+  padding: 8px;
   background:
     radial-gradient(circle at 26% 18%, rgba(255, 255, 255, 0.88), transparent 32%),
     linear-gradient(135deg, #fff3dc 0%, #eef9dc 100%);
@@ -611,11 +612,10 @@ textarea:focus {
 }
 
 .pos-product-media img {
-  position: absolute;
-  inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+  border-radius: 12px;
 }
 
 .pos-product-media span {
@@ -2112,7 +2112,7 @@ textarea:focus {
 .kiosk-floating-thumb img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
 }
 
 .kiosk-public-topbar .lang-switch {
@@ -2704,7 +2704,7 @@ textarea:focus {
 .product-image-preview img {
   width: min(180px, 100%);
   aspect-ratio: 1 / 0.78;
-  object-fit: cover;
+  object-fit: contain;
   border-radius: 16px;
 }
 
@@ -4444,6 +4444,7 @@ button[disabled] {
   overflow: hidden;
   display: grid;
   place-items: center;
+  padding: 6px;
   background: linear-gradient(135deg, #fff8d7, #edfbd7);
   font-size: 1.8rem;
 }
@@ -4451,7 +4452,7 @@ button[disabled] {
 .dashboard-product-image img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
 }
 
 .compact-list {
