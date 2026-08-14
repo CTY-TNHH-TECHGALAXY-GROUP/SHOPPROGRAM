@@ -1612,7 +1612,16 @@
       addOnIds: Array.isArray(baseItem.addOnIds) ? baseItem.addOnIds.slice() : [],
       note: baseItem.note || "",
       discountType: baseItem.discountType === "amount" || baseItem.discount_type === "amount" ? "amount" : "percent",
-      discountValue: Number(baseItem.discountValue != null ? baseItem.discountValue : baseItem.discount_value) || 0
+      discountValue: Number(baseItem.discountValue != null ? baseItem.discountValue : baseItem.discount_value) || 0,
+      originalPrice: Number(baseItem.originalPrice != null ? baseItem.originalPrice : baseItem.original_price) || 0,
+      promotionId: baseItem.promotionId || baseItem.promotion_id || "",
+      promotionName: baseItem.promotionName || baseItem.promotion_name || "",
+      promotionCode: baseItem.promotionCode || baseItem.promotion_code || "",
+      promotionGroupId: baseItem.promotionGroupId || baseItem.promotion_group_id || "",
+      promotionType: baseItem.promotionType || baseItem.promotion_type || "",
+      promotionBaseQty: Number(baseItem.promotionBaseQty != null ? baseItem.promotionBaseQty : baseItem.promotion_base_qty) || 0,
+      promotionBaseDiscount: Number(baseItem.promotionBaseDiscount != null ? baseItem.promotionBaseDiscount : baseItem.promotion_base_discount) || 0,
+      reportScope: baseItem.reportScope || baseItem.report_scope || ""
     });
   }
 
@@ -1839,6 +1848,127 @@
     };
   }
 
+  function isPromotionOrderLine(item) {
+    return !!(item && (item.promotionId || item.promotion_id));
+  }
+
+  function getPromotionGroupId(item) {
+    return String((item && (item.promotionGroupId || item.promotion_group_id || item.id)) || "");
+  }
+
+  function getPromotionLineBaseQty(item) {
+    return Math.max(0, Number(item && (item.promotionBaseQty || item.promotion_base_qty)) || 0) || 1;
+  }
+
+  function getPromotionGroupQuantity(groupItems) {
+    var lines = (groupItems || []).filter(isPromotionOrderLine);
+    if (!lines.length) return 0;
+    return Math.max(0, Math.round(lines.reduce(function (minQty, item) {
+      var ratio = (Number(item.qty) || 0) / getPromotionLineBaseQty(item);
+      return Math.min(minQty, ratio);
+    }, Infinity) || 0));
+  }
+
+  function getPromotionLineOriginalUnitPrice(item) {
+    return Math.max(0, Number(item && (item.originalPrice || item.original_price)) || Number(item && item.price) || 0);
+  }
+
+  function calculatePromotionGroup(groupItems, addOnOptions) {
+    var lines = (groupItems || []).filter(isPromotionOrderLine);
+    var first = lines[0] || {};
+    var originalSubtotal = lines.reduce(function (sum, item) {
+      return sum + Math.max(0, Math.round(getPromotionLineOriginalUnitPrice(item) * (Number(item.qty) || 0)));
+    }, 0);
+    var discountAmount = lines.reduce(function (sum, item) {
+      return sum + getItemDiscountAmount(item, addOnOptions);
+    }, 0);
+    var finalAmount = Math.max(0, Math.round(originalSubtotal - discountAmount));
+    return {
+      type: "promotion",
+      groupId: getPromotionGroupId(first),
+      promotionId: first.promotionId || first.promotion_id || "",
+      promotionName: first.promotionName || first.promotion_name || "Khuyến mãi",
+      promotionType: first.promotionType || first.promotion_type || "",
+      quantity: getPromotionGroupQuantity(lines),
+      itemCount: lines.reduce(function (sum, item) { return sum + (Number(item.qty) || 0); }, 0),
+      note: String(first.note || "").trim(),
+      items: lines.map(function (item) {
+        var qty = Number(item.qty) || 0;
+        var originalUnitPrice = getPromotionLineOriginalUnitPrice(item);
+        var originalLineTotal = Math.max(0, Math.round(originalUnitPrice * qty));
+        var allocatedDiscount = getItemDiscountAmount(item, addOnOptions);
+        return {
+          id: item.id,
+          productId: item.productId,
+          name: item.name,
+          qty: qty,
+          originalUnitPrice: originalUnitPrice,
+          originalLineTotal: originalLineTotal,
+          allocatedFinalAmount: Math.max(0, originalLineTotal - allocatedDiscount),
+          allocatedDiscount: allocatedDiscount
+        };
+      }),
+      originalSubtotal: Math.max(0, Math.round(originalSubtotal)),
+      discountAmount: Math.max(0, Math.round(discountAmount)),
+      finalAmount: finalAmount
+    };
+  }
+
+  function getOrderBillRows(order, addOnOptions) {
+    var rows = [];
+    var promotionGroups = {};
+    (order && order.items || []).forEach(function (item) {
+      if (!isPromotionOrderLine(item)) {
+        rows.push({ type: "item", item: item });
+        return;
+      }
+      var groupId = getPromotionGroupId(item);
+      if (!promotionGroups[groupId]) {
+        promotionGroups[groupId] = { type: "promotion", groupId: groupId, items: [] };
+        rows.push(promotionGroups[groupId]);
+      }
+      promotionGroups[groupId].items.push(item);
+    });
+    return rows.map(function (row) {
+      return row.type === "promotion" ? calculatePromotionGroup(row.items, addOnOptions) : row;
+    });
+  }
+
+  function getOrderDiscountBreakdown(order, addOnOptions) {
+    var rows = getOrderBillRows(order, addOnOptions);
+    var promotionDiscounts = rows.filter(function (row) {
+      return row.type === "promotion" && (Number(row.discountAmount) || 0) > 0;
+    }).map(function (row) {
+      return {
+        id: row.groupId,
+        label: row.promotionName || "Khuyến mãi",
+        amount: Math.max(0, Math.round(Number(row.discountAmount) || 0))
+      };
+    });
+    var itemDiscount = (order && order.items || []).reduce(function (sum, item) {
+      if (isPromotionOrderLine(item)) return sum;
+      return sum + getItemDiscountAmount(item, addOnOptions);
+    }, 0);
+    var orderDiscount = Math.max(0, Math.round(Number(order && order.discountAmount) || 0));
+    var explicitDiscount = promotionDiscounts.reduce(function (sum, row) {
+      return sum + row.amount;
+    }, 0) + Math.max(0, Math.round(itemDiscount)) + orderDiscount;
+    var legacyDiscount = 0;
+    if (!explicitDiscount && order && order.discountPct) {
+      var subtotal = (order.items || []).reduce(function (sum, item) {
+        return sum + getItemLineGross(item, addOnOptions);
+      }, 0);
+      legacyDiscount = Math.max(0, Math.round(subtotal * (Number(order.discountPct) / 100)));
+    }
+    return {
+      promotionDiscounts: promotionDiscounts,
+      itemDiscount: Math.max(0, Math.round(itemDiscount)),
+      orderDiscount: orderDiscount,
+      legacyDiscount: legacyDiscount,
+      totalDiscount: explicitDiscount + legacyDiscount
+    };
+  }
+
   function formatCurrency(value) {
     return new Intl.NumberFormat("vi-VN", {
       style: "currency",
@@ -1957,6 +2087,7 @@
       addOns: Array.isArray(safeStored.addOns) && safeStored.addOns.length ? safeStored.addOns : clone(DEFAULT_ADD_ON_OPTIONS),
       components: Array.isArray(safeStored.components) && safeStored.components.length ? safeStored.components.map(normalizeComponent) : clone(DEFAULT_COMPONENT_OPTIONS).map(normalizeComponent),
       products: Array.isArray(safeStored.products) && safeStored.products.length ? safeStored.products.map(normalizeProduct) : clone(DEFAULT_PRODUCTS).map(normalizeProduct),
+      promotions: Array.isArray(safeStored.promotions) ? safeStored.promotions.map(normalizePromotion) : [],
       productionRecipes: Array.isArray(safeStored.productionRecipes) ? safeStored.productionRecipes.map(normalizeProductionRecipe) : [],
       productionBatches: Array.isArray(safeStored.productionBatches) ? safeStored.productionBatches.map(normalizeProductionBatch) : [],
       sales: Array.isArray(safeStored.sales)
@@ -1998,6 +2129,7 @@
       addOns: clone(DEFAULT_ADD_ON_OPTIONS),
       components: clone(DEFAULT_COMPONENT_OPTIONS).map(normalizeComponent),
       products: clone(DEFAULT_PRODUCTS).map(normalizeProduct),
+      promotions: [],
       productionRecipes: [],
       productionBatches: [],
       sales: [],
@@ -2092,6 +2224,50 @@
       inventoryMode: normalizedInventoryMode,
       unit: baseProduct.unit || "",
       skuCode: baseProduct.skuCode || baseProduct.sku_code || baseProduct.id
+    });
+  }
+
+  function normalizePromotion(promotion) {
+    var basePromotion = promotion || {};
+    var items = Array.isArray(basePromotion.items)
+      ? basePromotion.items
+      : safeJsonParse(basePromotion.itemsJson || basePromotion.items_json, []);
+    var firstConfiguredItem = items.find(function (item) {
+      return item && (item.discountType || item.discount_type || item.discountValue || item.discount_value || item.buyQty || item.buy_qty || item.giftQty || item.gift_qty);
+    }) || {};
+    return Object.assign({}, basePromotion, {
+      id: basePromotion.id || uid("promo"),
+      name: basePromotion.name || basePromotion.promotionName || basePromotion.promotion_name || "",
+      code: String(basePromotion.code || basePromotion.promotionCode || basePromotion.promotion_code || "").trim().toUpperCase(),
+      promoType: basePromotion.promoType || basePromotion.promo_type || "combo",
+      price: Math.max(0, Math.round(Number(basePromotion.price || basePromotion.netAmount || basePromotion.net_amount) || 0)),
+      discountAmount: Math.max(0, Math.round(Number(basePromotion.discountAmount || basePromotion.discount_amount) || 0)),
+      discountType: basePromotion.discountType || basePromotion.discount_type || firstConfiguredItem.discountType || firstConfiguredItem.discount_type || "percent",
+      discountValue: Math.max(0, Number(basePromotion.discountValue || basePromotion.discount_value || firstConfiguredItem.discountValue || firstConfiguredItem.discount_value) || 0),
+      buyQty: Math.max(1, Number(basePromotion.buyQty || basePromotion.buy_qty || firstConfiguredItem.buyQty || firstConfiguredItem.buy_qty) || 1),
+      giftQty: Math.max(1, Number(basePromotion.giftQty || basePromotion.gift_qty || firstConfiguredItem.giftQty || firstConfiguredItem.gift_qty) || 1),
+      image: basePromotion.image || "🎁",
+      description: basePromotion.description || "",
+      items: items.map(function (item) {
+        return {
+          productId: item.productId || item.product_id || "",
+          productName: item.productName || item.product_name || item.name || "",
+          qty: Math.max(0, Number(item.qty) || 0),
+          role: item.role || item.itemRole || item.item_role || "bundle",
+          discountType: item.discountType || item.discount_type || "",
+          discountValue: Math.max(0, Number(item.discountValue || item.discount_value) || 0),
+          buyQty: Math.max(0, Number(item.buyQty || item.buy_qty) || 0),
+          giftQty: Math.max(0, Number(item.giftQty || item.gift_qty) || 0)
+        };
+      }).filter(function (item) {
+        return item.productId && item.qty > 0;
+      }),
+      startsAt: Number(basePromotion.startsAt || basePromotion.starts_at) || 0,
+      endsAt: Number(basePromotion.endsAt || basePromotion.ends_at) || 0,
+      isActive: basePromotion.isActive !== false && basePromotion.is_active !== 0,
+      sortOrder: Number(basePromotion.sortOrder || basePromotion.sort_order) || 0,
+      usageCount: Number(basePromotion.usageCount || basePromotion.usage_count) || 0,
+      updatedAt: Number(basePromotion.updatedAt || basePromotion.updated_at) || 0
     });
   }
 
@@ -2277,9 +2453,35 @@
       return getItemDiscountAmount(item, addOnOptions);
     }
 
-    // Each item: name + addons/note + qty×price + optional item discount.
-    var itemDiscountTotal = 0;
-    var lineItems = (order.items || []).map(function (item) {
+    var printableRows = getOrderBillRows(order, addOnOptions);
+    var discountBreakdown = getOrderDiscountBreakdown(order, addOnOptions);
+    var itemDiscountTotal = discountBreakdown.itemDiscount || 0;
+    var lineItems = printableRows.map(function (row) {
+      if (row.type === "promotion") {
+        var childRows = row.items.map(function (child) {
+          return (
+            "<div class='item-row promo-child'>" +
+              "<span>• " + esc(child.name) + " ×" + esc(formatQuantity(child.qty, 2)) + "</span>" +
+              "<span>" + formatCurrency(child.originalLineTotal) + "</span>" +
+            "</div>"
+          );
+        }).join("");
+        var noteRow = row.note ? "<div class='addon'>" + esc(pickLanguage("Ghi chú / Note", language)) + ": " + esc(row.note) + "</div>" : "";
+        return (
+          "<div class='item promo-item'>" +
+            "<div class='item-name'>" + esc(row.promotionName || pickLanguage("Khuyến mãi / Promotion", language)) + "</div>" +
+            "<div class='addon'>" + esc(row.items.map(function (child) { return child.name; }).join(" + ")) + "</div>" +
+            noteRow +
+            childRows +
+            "<div class='promo-summary'>" +
+              "<div class='item-row'><span>" + esc(pickLanguage("Giá gốc / Original", language)) + "</span><span>" + formatCurrency(row.originalSubtotal) + "</span></div>" +
+              "<div class='item-row'><span>" + esc(pickLanguage("Giảm giá / Discount", language)) + "</span><span>-" + formatCurrency(row.discountAmount) + "</span></div>" +
+              "<div class='item-row promo-final'><span>" + esc(pickLanguage("Thành tiền / Final", language)) + "</span><strong>" + formatCurrency(row.finalAmount) + "</strong></div>" +
+            "</div>" +
+          "</div>"
+        );
+      }
+      var item = row.item;
       var addons = (item.addOnIds || []).map(function (id) {
         var a = getAddonById(id, addOnOptions);
         return a ? pickLanguage(a.label, language) : "";
@@ -2289,7 +2491,6 @@
       var lineGross = getItemLineGross(item, addOnOptions);
       var itemDiscount = getPrintableItemDiscount(item);
       var lineTotal = Math.max(0, lineGross - itemDiscount);
-      itemDiscountTotal += itemDiscount;
       var addonRow = addons ? "<div class='addon'>+ " + esc(addons) + "</div>" : "";
       var noteRow = item.note ? "<div class='addon'>Ghi chú: " + esc(item.note) + "</div>" : "";
       var unitText = showUnitPrice
@@ -2387,6 +2588,12 @@
       ".addon { font-size: 11px; padding-left: 8px; color: #333; }" +
       ".item-row { display: flex; justify-content: space-between; gap: 6px; font-size: 12px; }" +
       ".discount-line { color: #333; font-size: 11px; padding-left: 8px; }" +
+      ".promo-item { padding: 3px 0; }" +
+      ".promo-child { padding-left: 6px; }" +
+      ".promo-summary { border-top: 1px dashed #000; border-bottom: 1px dashed #000; margin-top: 4px; padding: 3px 0; }" +
+      ".promo-final { font-weight: 700; }" +
+      ".discount-title { font-weight: 700; margin-top: 2px; }" +
+      ".discount-row span:last-child { font-weight: 700; }" +
       ".line-price { display: inline-flex; flex-direction: column; align-items: flex-end; line-height: 1.2; }" +
       ".line-price del { font-size: 10.5px; color: #555; }" +
       ".line-price strong { font-size: 12px; }" +
@@ -2409,12 +2616,17 @@
       ? window.location.origin + "/"
       : "/";
 
-    var totalDiscount = Number(totals.discount) || 0;
-    var orderDiscount = Math.max(0, totalDiscount - itemDiscountTotal);
+    var promotionDiscountRows = (discountBreakdown.promotionDiscounts || []).map(function (discountRow) {
+      return "<div class='row discount-row'><span>" + esc(discountRow.label) + "</span><span>-" + formatCurrency(discountRow.amount) + "</span></div>";
+    }).join("");
     var discountSummaryHtml =
-      (itemDiscountTotal ? "<div class='row'><span>" + esc(pickLanguage("Giảm từng món / Item discounts", language)) + "</span><span>-" + formatCurrency(itemDiscountTotal) + "</span></div>" : "") +
-      (orderDiscount ? "<div class='row'><span>" + esc(pickLanguage("Giảm toàn đơn / Order discount", language)) + "</span><span>-" + formatCurrency(orderDiscount) + "</span></div>" : "") +
-      (!itemDiscountTotal && totalDiscount ? "<div class='row'><span>" + esc(pickLanguage("Giảm / Discount", language)) + "</span><span>-" + formatCurrency(totalDiscount) + "</span></div>" : "");
+      "<div class='row'><span>" + esc(pickLanguage("Tổng giá gốc / Original subtotal", language)) + "</span><span>" + formatCurrency(totals.subtotal) + "</span></div>" +
+      (discountBreakdown.totalDiscount ? "<div class='discount-title'>" + esc(pickLanguage("Giảm giá / Discounts", language)) + "</div>" : "") +
+      promotionDiscountRows +
+      (itemDiscountTotal ? "<div class='row discount-row'><span>" + esc(pickLanguage("Giảm giá món / Item discount", language)) + "</span><span>-" + formatCurrency(itemDiscountTotal) + "</span></div>" : "") +
+      (discountBreakdown.orderDiscount ? "<div class='row discount-row'><span>" + esc(pickLanguage("Giảm toàn đơn / Order discount", language)) + "</span><span>-" + formatCurrency(discountBreakdown.orderDiscount) + "</span></div>" : "") +
+      (discountBreakdown.legacyDiscount ? "<div class='row discount-row'><span>" + esc(pickLanguage("Giảm giá / Discount", language)) + "</span><span>-" + formatCurrency(discountBreakdown.legacyDiscount) + "</span></div>" : "") +
+      (discountBreakdown.totalDiscount ? "<div class='row'><span>" + esc(pickLanguage("Tổng giảm giá / Total discount", language)) + "</span><span>-" + formatCurrency(discountBreakdown.totalDiscount) + "</span></div>" : "");
 
     return (
       "<!DOCTYPE html><html><head><meta charset='utf-8'>" +
@@ -2438,7 +2650,7 @@
           // Totals: single grand total + VAT-inclusive note
           "<div class='totals'>" +
             discountSummaryHtml +
-            "<div class='row grand-row'><span>" + esc(pickLanguage("TỔNG CỘNG / TOTAL", language)) + "</span><span>" + formatCurrency(totalAmount) + "</span></div>" +
+            "<div class='row grand-row'><span>" + esc(pickLanguage("TỔNG / TOTAL", language)) + "</span><span>" + formatCurrency(totalAmount) + "</span></div>" +
             "<div class='vat-note'>" + esc(pickLanguage("(Giá đã bao gồm VAT) / (VAT included)", language)) + "</div>" +
             (template.showCashReceived !== false && cashReceived > 0 ? "<div class='row'><span>" + esc(pickLanguage("Khách đưa / Cash", language)) + "</span><span>" + formatCurrency(cashReceived) + "</span></div>" : "") +
             (template.showChangeDue !== false && cashReceived > 0 ? "<div class='row'><span>" + esc(pickLanguage("Tiền thừa / Change", language)) + "</span><span>" + formatCurrency(changeDue) + "</span></div>" : "") +
@@ -2668,6 +2880,7 @@
       var product = item && item.productId ? findProductById(item.productId) : null;
       return (item && item.unit) || (product && product.unit) || "";
     }
+    var [promotions, setPromotions] = useState(initialState.promotions || []);
     var [sales, setSales] = useState(initialState.sales);
     var [orders, setOrders] = useState(initialState.orders);
     var [activeOrderId, setActiveOrderId] = useState(initialState.activeOrderId || initialState.orders[0].id);
@@ -2822,12 +3035,14 @@
       Promise.all([
         publicKioskApi("/products?all=1"),
         publicKioskApi("/categories"),
-        publicKioskApi("/addons")
+        publicKioskApi("/addons"),
+        publicKioskApi("/promotions")
       ]).then(function (results) {
         if (cancelled) return;
         var productRows = (results[0] && results[0].products) || [];
         var categoryRows = (results[1] && results[1].categories) || [];
         var addonRows = (results[2] && (results[2].addOns || results[2].addons)) || [];
+        var promotionRows = (results[3] && results[3].promotions) || [];
 
         setProducts(productRows
           .filter(function (row) { return row && row.isActive !== false && row.is_active !== 0; })
@@ -2868,6 +3083,9 @@
               group: row.group || row.groupKey || row.group_key || "extras"
             };
           }));
+        setPromotions(promotionRows.map(normalizePromotion).filter(function (promotion) {
+          return promotion.isActive && promotion.items.length;
+        }));
         setKioskMessage("");
       }).catch(function (error) {
         if (cancelled) return;
@@ -3199,6 +3417,24 @@
       price: 0,
       group: "extras"
     });
+    var [promotionDraft, setPromotionDraft] = useState({
+      id: null,
+      name: "",
+      code: "",
+      promoType: "combo",
+      price: 0,
+      discountType: "percent",
+      discountValue: 0,
+      buyQty: 1,
+      giftQty: 1,
+      image: "🎁",
+      description: "",
+      startsAt: "",
+      endsAt: "",
+      isActive: true,
+      items: []
+    });
+    var [promotionProductSearch, setPromotionProductSearch] = useState("");
     var [componentDraft, setComponentDraft] = useState({
       id: null,
       labelVi: "",
@@ -3294,6 +3530,7 @@
         productionRecipes: productionRecipes,
         productionBatches: productionBatches,
         products: products,
+        promotions: promotions,
         sales: sales,
         orders: orders,
         activeOrderId: activeOrderId,
@@ -3316,6 +3553,7 @@
       setProductionRecipes(hydrated.productionRecipes || []);
       setProductionBatches(hydrated.productionBatches || []);
       setProducts(hydrated.products);
+      setPromotions(hydrated.promotions || []);
       setSales(hydrated.sales);
       setOrders(hydrated.orders);
       setActiveOrderId(hydrated.activeOrderId || (hydrated.orders[0] ? hydrated.orders[0].id : ""));
@@ -3573,6 +3811,7 @@
       addOns,
       components,
       products,
+      promotions,
       sales,
       orders,
       activeOrderId,
@@ -4269,6 +4508,19 @@
       }).catch(function () {});
     }
 
+    function loadPromotions(includeInactive) {
+      return syncApi("/promotions" + (includeInactive ? "?all=1" : ""))
+        .then(function (data) {
+          setPromotions(((data && data.promotions) || []).map(normalizePromotion));
+        })
+        .catch(function () {});
+    }
+
+    useEffect(function () {
+      if (!currentUser || publicKioskMode) return undefined;
+      loadPromotions(currentUser.role === "admin" || currentUser.role === "manager");
+    }, [currentUser && currentUser.email, currentUser && currentUser.role, publicKioskMode]);
+
     function getPreviousRangeBounds(range) {
       var duration = Math.max(1, (Number(range.to) || Date.now()) - (Number(range.from) || 0) + 1);
       return {
@@ -4600,6 +4852,8 @@
     }) || orders[0] || normalizeOrder({ createdAt: Date.now() });
 
     var totals = calculateOrder(activeOrder, addOns);
+    var orderBillRows = getOrderBillRows(activeOrder, addOns);
+    var billDiscountBreakdown = getOrderDiscountBreakdown(activeOrder, addOns);
 
     var filterCategories = useMemo(function () {
       // Sort: level-1 parents first, then their children indented underneath.
@@ -4651,6 +4905,41 @@
       });
     }, [products, categories, selectedCategory, searchTerm]);
 
+    function isPromotionActiveForSale(promotion) {
+      var normalizedPromo = normalizePromotion(promotion);
+      if (!normalizedPromo.isActive || !normalizedPromo.items.length) return false;
+      var currentTime = Date.now();
+      if (normalizedPromo.startsAt && Number(normalizedPromo.startsAt) > currentTime) return false;
+      if (normalizedPromo.endsAt && Number(normalizedPromo.endsAt) < currentTime) return false;
+      return true;
+    }
+
+    function promotionMatchesSearch(promotion, query) {
+      if (!query) return true;
+      var normalizedPromo = normalizePromotion(promotion);
+      var childNames = (normalizedPromo.items || []).map(function (item) {
+        var product = findProductById(item.productId);
+        return [item.productName, product && product.name, item.productId].filter(Boolean).join(" ");
+      }).join(" ");
+      return [normalizedPromo.name, normalizedPromo.code, normalizedPromo.description, childNames]
+        .join(" ")
+        .toLowerCase()
+        .indexOf(String(query || "").toLowerCase()) !== -1;
+    }
+
+    var activePromotions = useMemo(function () {
+      return (promotions || []).map(normalizePromotion).filter(isPromotionActiveForSale).sort(function (a, b) {
+        return (Number(a.sortOrder) || 0) - (Number(b.sortOrder) || 0) || String(a.name || "").localeCompare(String(b.name || ""));
+      });
+    }, [promotions]);
+
+    var filteredPromotions = useMemo(function () {
+      if (selectedCategory !== "all") return [];
+      return activePromotions.filter(function (promotion) {
+        return promotionMatchesSearch(promotion, searchTerm || barcodeInput);
+      });
+    }, [activePromotions, selectedCategory, searchTerm, barcodeInput, products]);
+
     var kioskFilteredProducts = useMemo(function () {
       return products.filter(function (product) {
         var category = categories.find(function (item) {
@@ -4669,6 +4958,13 @@
         return matchesCategory && matchesSearch;
       });
     }, [products, categories, kioskCategory, kioskSearchTerm]);
+
+    var kioskFilteredPromotions = useMemo(function () {
+      if (kioskCategory !== "all") return [];
+      return activePromotions.filter(function (promotion) {
+        return promotionMatchesSearch(promotion, kioskSearchTerm);
+      });
+    }, [activePromotions, kioskCategory, kioskSearchTerm, products]);
 
     // ---------- Low-stock awareness ----------
     // A product is "low" when its on-hand qty is at or below the configured
@@ -4920,6 +5216,7 @@
       });
       paidSalesInRange.forEach(function (s) {
         (s.items || []).forEach(function (it) {
+          if (it && ((it.reportScope || it.report_scope) === "promotion_only" || it.promotionId || it.promotion_id)) return;
           var product = resolveDashboardProduct(it);
           var productCategory = (product && product.category) || it.category || it.category_id || it.product_category || "";
           if (!categoryMatchesSelected(productCategory, dashboardTopCategory, categories)) return;
@@ -4932,6 +5229,47 @@
       var topProducts = Object.values(byProduct).filter(function (item) {
         return (Number(item.qty) || 0) > 0;
       }).sort(sortDashboardProducts);
+      var byPromotionReport = {};
+      paidSalesInRange.forEach(function (sale) {
+        var salePromotions = sale.promotions || sale.appliedPromotions || sale.promotions_json || [];
+        if (typeof salePromotions === "string") {
+          try {
+            salePromotions = JSON.parse(salePromotions);
+          } catch (_) {
+            salePromotions = [];
+          }
+        }
+        (Array.isArray(salePromotions) ? salePromotions : []).forEach(function (promotion) {
+          var normalizedPromo = normalizePromotion({
+            id: promotion.id || promotion.promotionId || promotion.promotion_id,
+            name: promotion.name || promotion.promotionName || promotion.promotion_name,
+            code: promotion.code || promotion.promotionCode || promotion.promotion_code,
+            price: promotion.netAmount || promotion.net_amount || promotion.price,
+            items: promotion.items || []
+          });
+          var key = normalizedPromo.id || normalizedPromo.code || normalizedPromo.name;
+          if (!key) return;
+          if (!byPromotionReport[key]) {
+            byPromotionReport[key] = {
+              key: "promotion:" + key,
+              id: normalizedPromo.id,
+              name: normalizedPromo.name || normalizedPromo.code || key,
+              code: normalizedPromo.code || "",
+              qty: 0,
+              revenue: 0,
+              discount: 0
+            };
+          }
+          byPromotionReport[key].qty += Number(promotion.qty) || 1;
+          byPromotionReport[key].revenue += Number(promotion.netAmount || promotion.net_amount || promotion.net || promotion.price) || 0;
+          byPromotionReport[key].discount += Number(promotion.discountAmount || promotion.discount_amount) || 0;
+        });
+      });
+      var promotionProducts = Object.values(byPromotionReport).filter(function (item) {
+        return (Number(item.qty) || 0) > 0;
+      }).sort(function (a, b) {
+        return (Number(b.qty) || 0) - (Number(a.qty) || 0) || (Number(b.revenue) || 0) - (Number(a.revenue) || 0);
+      });
       var statusMap = {};
       function addStatus(id, label, tone, amount) {
         if (!statusMap[id]) {
@@ -5145,6 +5483,21 @@
         var apiTopProducts = Object.values(apiByProduct).filter(function (item) {
           return !!item.name && (Number(item.qty) || 0) > 0;
         }).sort(sortDashboardProducts);
+        var apiPromotionProducts = (dashboardApiData.promotionProducts || []).map(function (row) {
+          return {
+            key: "promotion:" + (row.promotion_id || row.promotionId || row.promotion_code || row.promotion_name || row.name),
+            id: row.promotion_id || row.promotionId || "",
+            name: row.promotion_name || row.promotionName || row.name || row.promotion_code || "",
+            code: row.promotion_code || row.promotionCode || "",
+            qty: Number(row.qty) || 0,
+            revenue: Number(row.net_amount || row.netAmount || row.revenue) || 0,
+            discount: Number(row.discount_amount || row.discountAmount) || 0
+          };
+        }).filter(function (item) {
+          return !!item.name && (Number(item.qty) || 0) > 0;
+        }).sort(function (a, b) {
+          return (Number(b.qty) || 0) - (Number(a.qty) || 0) || (Number(b.revenue) || 0) - (Number(a.revenue) || 0);
+        });
 
         return {
           range: range,
@@ -5160,6 +5513,7 @@
           daySeries: apiDaySeries,
           paymentBreakdown: apiPaymentBreakdown,
           topProducts: apiTopProducts,
+          promotionProducts: apiPromotionProducts,
           pendingPurchases: pendingPurchases,
           pendingPurchaseTotal: pendingPurchaseTotal,
           recentOrders: apiRecentOrders,
@@ -5181,6 +5535,7 @@
         daySeries: daySeries,
         paymentBreakdown: paymentBreakdown,
         topProducts: topProducts,
+        promotionProducts: promotionProducts,
         pendingPurchases: pendingPurchases,
         pendingPurchaseTotal: pendingPurchaseTotal,
         recentOrders: recentOrders,
@@ -5817,8 +6172,162 @@
         addOnIds: Array.isArray(safeOptions.addOnIds) ? safeOptions.addOnIds.slice() : [],
         note: String(safeOptions.note || "").trim(),
         discountType: "percent",
-        discountValue: 0
+        discountValue: 0,
+        promotionId: safeOptions.promotionId || "",
+        promotionName: safeOptions.promotionName || "",
+        promotionCode: safeOptions.promotionCode || "",
+        promotionGroupId: safeOptions.promotionGroupId || "",
+        reportScope: safeOptions.reportScope || ""
       };
+    }
+
+    function getPromotionGrossAmount(promotion) {
+      return (promotion.items || []).reduce(function (sum, item) {
+        var product = findProductById(item.productId);
+        return sum + ((Number(product && product.price) || 0) * (Number(item.qty) || 0));
+      }, 0);
+    }
+
+    function getPromotionTemplateLabel(promotion) {
+      var type = (promotion && (promotion.promoType || promotion.promo_type)) || "combo";
+      if (type === "item_discount") return L("Giảm giá món / Item Discount");
+      if (type === "buy_get") return L("Mua tặng / Buy Get");
+      return L("Combo / Combo");
+    }
+
+    function getPromotionComputedPrice(promotion) {
+      var normalizedPromo = normalizePromotion(promotion);
+      if (normalizedPromo.promoType === "item_discount") {
+        var discountItem = normalizedPromo.items[0];
+        var discountProduct = discountItem ? findProductById(discountItem.productId) : null;
+        var qty = Math.max(1, Number(discountItem && discountItem.qty) || 1);
+        var gross = (Number(discountProduct && discountProduct.price) || 0) * qty;
+        var discountValue = Number(discountItem && discountItem.discountValue) || Number(normalizedPromo.discountValue) || 0;
+        var discountType = (discountItem && discountItem.discountType) || normalizedPromo.discountType;
+        var discount = discountType === "amount" ? discountValue : gross * Math.min(Math.max(discountValue, 0), 100) / 100;
+        return Math.max(0, Math.round(gross - discount));
+      }
+      if (normalizedPromo.promoType === "buy_get") {
+        return normalizedPromo.items.filter(function (item) { return item.role === "buy"; }).reduce(function (sum, item) {
+          var product = findProductById(item.productId);
+          return sum + ((Number(product && product.price) || 0) * (Number(item.qty) || 0));
+        }, 0);
+      }
+      return Math.max(0, Number(normalizedPromo.price) || 0);
+    }
+
+    function createOrderLinesFromPromotion(promotion) {
+      var normalizedPromo = normalizePromotion(promotion);
+      var groupId = uid("promo-group");
+      var grossAmount = getPromotionGrossAmount(normalizedPromo);
+      var promoType = normalizedPromo.promoType || "combo";
+      if (promoType === "item_discount") {
+        var discountItem = normalizedPromo.items[0];
+        var discountProduct = discountItem ? findProductById(discountItem.productId) : null;
+        if (!discountProduct) return [];
+        var discountQty = Math.max(1, Number(discountItem.qty) || 1);
+        var discountLine = createOrderLineFromProduct(discountProduct, {
+          qty: discountQty,
+          note: normalizedPromo.name,
+          promotionId: normalizedPromo.id,
+          promotionName: normalizedPromo.name,
+          promotionCode: normalizedPromo.code,
+          promotionGroupId: groupId,
+          reportScope: "promotion_only"
+        });
+        discountLine.originalPrice = Number(discountProduct.price) || 0;
+        discountLine.discountType = discountItem.discountType === "amount" || normalizedPromo.discountType === "amount" ? "amount" : "percent";
+        discountLine.discountValue = Number(discountItem.discountValue || normalizedPromo.discountValue) || 0;
+        discountLine.promotionType = promoType;
+        discountLine.promotionBaseQty = discountQty;
+        discountLine.promotionBaseDiscount = getItemDiscountAmount(discountLine, []);
+        return [discountLine];
+      }
+      if (promoType === "buy_get") {
+        return normalizedPromo.items.map(function (promoItem) {
+          var product = findProductById(promoItem.productId);
+          if (!product) return null;
+          var qty = Math.max(0, Number(promoItem.qty) || 0);
+          if (!qty) return null;
+          var line = createOrderLineFromProduct(product, {
+            qty: qty,
+            note: normalizedPromo.name,
+            promotionId: normalizedPromo.id,
+            promotionName: normalizedPromo.name,
+            promotionCode: normalizedPromo.code,
+            promotionGroupId: groupId,
+            reportScope: "promotion_only"
+          });
+          line.originalPrice = Number(product.price) || 0;
+          if (promoItem.role === "gift") {
+            line.discountType = "amount";
+            line.discountValue = Math.round((Number(product.price) || 0) * qty);
+          }
+          line.promotionType = promoType;
+          line.promotionBaseQty = qty;
+          line.promotionBaseDiscount = getItemDiscountAmount(line, []);
+          return line;
+        }).filter(Boolean);
+      }
+      var comboPrice = Math.max(0, Number(normalizedPromo.price) || 0);
+      var allocatedSoFar = 0;
+      return normalizedPromo.items.map(function (promoItem, index) {
+        var product = findProductById(promoItem.productId);
+        if (!product) return null;
+        var qty = Math.max(0, Number(promoItem.qty) || 0);
+        if (!qty) return null;
+        var childGross = (Number(product.price) || 0) * qty;
+        var lineTotal = index === normalizedPromo.items.length - 1
+          ? Math.max(0, comboPrice - allocatedSoFar)
+          : Math.round(grossAmount > 0 ? comboPrice * (childGross / grossAmount) : comboPrice / normalizedPromo.items.length);
+        allocatedSoFar += lineTotal;
+        var line = createOrderLineFromProduct(product, {
+          qty: qty,
+          note: normalizedPromo.name,
+          promotionId: normalizedPromo.id,
+          promotionName: normalizedPromo.name,
+          promotionCode: normalizedPromo.code,
+          promotionGroupId: groupId,
+          reportScope: "promotion_only"
+        });
+        line.originalPrice = Number(product.price) || 0;
+        line.discountType = "amount";
+        line.discountValue = Math.max(0, Math.round(childGross - lineTotal));
+        line.promotionType = promoType;
+        line.promotionBaseQty = qty;
+        line.promotionBaseDiscount = line.discountValue;
+        return line;
+      }).filter(Boolean);
+    }
+
+    function addPromotionToOrder(promotion) {
+      var lines = createOrderLinesFromPromotion(promotion);
+      if (!lines.length) {
+        window.alert(L("Combo chưa có sản phẩm hợp lệ. / This combo has no valid products."));
+        return;
+      }
+      if (!posOrderPicked) {
+        window.alert(L("Chọn một đơn trước khi thêm combo. / Pick an order before adding a combo."));
+        return;
+      }
+      updateActiveOrder(function (order) {
+        return Object.assign({}, order, {
+          status: order.status === "preparing" ? "preparing" : "open",
+          items: (order.items || []).concat(lines)
+        });
+      });
+    }
+
+    function addPromotionToKioskCart(promotion) {
+      var lines = createOrderLinesFromPromotion(promotion);
+      if (!lines.length) {
+        setKioskMessage(L("Combo chưa có sản phẩm hợp lệ. / This combo has no valid products."));
+        return;
+      }
+      setKioskCart(function (current) {
+        return current.concat(lines);
+      });
+      setKioskMessage("");
     }
 
     function addCustomizedProductToOrder() {
@@ -5979,6 +6488,8 @@
     function adjustKioskItemQty(itemId, delta) {
       var deltaNum = Number(delta) || 0;
       setKioskCart(function (currentItems) {
+        var targetItem = currentItems.find(function (item) { return item.id === itemId; });
+        if (targetItem && targetItem.promotionId) return currentItems;
         return currentItems
           .map(function (item) {
             if (item.id !== itemId) return item;
@@ -5991,7 +6502,12 @@
 
     function removeKioskItem(itemId) {
       setKioskCart(function (currentItems) {
-        return currentItems.filter(function (item) { return item.id !== itemId; });
+        var targetItem = currentItems.find(function (item) { return item.id === itemId; });
+        var promotionGroupId = targetItem && targetItem.promotionId ? targetItem.promotionGroupId : "";
+        return currentItems.filter(function (item) {
+          if (promotionGroupId) return item.promotionGroupId !== promotionGroupId;
+          return item.id !== itemId;
+        });
       });
     }
 
@@ -6112,6 +6628,8 @@
     function adjustItemQty(itemId, delta) {
       var deltaNum = Number(delta) || 0;
       updateActiveOrder(function (order) {
+        var targetItem = (order.items || []).find(function (item) { return item.id === itemId; });
+        if (targetItem && targetItem.promotionId) return order;
         var nextItems = (order.items || [])
           .map(function (item) {
             if (item.id !== itemId) {
@@ -6129,10 +6647,97 @@
       });
     }
 
+    function adjustPromotionGroupQty(groupId, delta) {
+      var deltaNum = Number(delta) || 0;
+      if (!groupId || !deltaNum) return;
+      updateActiveOrder(function (order) {
+        var groupItems = (order.items || []).filter(function (item) {
+          return isPromotionOrderLine(item) && getPromotionGroupId(item) === groupId;
+        });
+        if (!groupItems.length) return order;
+        var currentGroupQty = getPromotionGroupQuantity(groupItems);
+        var nextGroupQty = Math.max(0, currentGroupQty + deltaNum);
+        if (nextGroupQty <= 0) {
+          return Object.assign({}, order, {
+            items: (order.items || []).filter(function (item) {
+              return !isPromotionOrderLine(item) || getPromotionGroupId(item) !== groupId;
+            })
+          });
+        }
+        return Object.assign({}, order, {
+          items: (order.items || []).map(function (item) {
+            if (!isPromotionOrderLine(item) || getPromotionGroupId(item) !== groupId) return item;
+            var baseQty = getPromotionLineBaseQty(item);
+            var baseDiscount = Math.max(0, Number(item.promotionBaseDiscount) || (currentGroupQty ? (Number(item.discountValue) || 0) / currentGroupQty : Number(item.discountValue) || 0));
+            return Object.assign({}, item, {
+              qty: Math.max(0, Math.round(baseQty * nextGroupQty)),
+              discountType: "amount",
+              discountValue: Math.max(0, Math.round(baseDiscount * nextGroupQty)),
+              promotionBaseQty: baseQty,
+              promotionBaseDiscount: baseDiscount
+            });
+          })
+        });
+      });
+    }
+
+    function setPromotionGroupQty(groupId, qty) {
+      var nextQty = Math.max(1, Math.round(Number(qty) || 1));
+      updateActiveOrder(function (order) {
+        var groupItems = (order.items || []).filter(function (item) {
+          return isPromotionOrderLine(item) && getPromotionGroupId(item) === groupId;
+        });
+        if (!groupItems.length) return order;
+        var currentGroupQty = getPromotionGroupQuantity(groupItems) || 1;
+        return Object.assign({}, order, {
+          items: (order.items || []).map(function (item) {
+            if (!isPromotionOrderLine(item) || getPromotionGroupId(item) !== groupId) return item;
+            var baseQty = getPromotionLineBaseQty(item);
+            var baseDiscount = Math.max(0, Number(item.promotionBaseDiscount) || ((Number(item.discountValue) || 0) / currentGroupQty));
+            return Object.assign({}, item, {
+              qty: Math.max(0, Math.round(baseQty * nextQty)),
+              discountType: "amount",
+              discountValue: Math.max(0, Math.round(baseDiscount * nextQty)),
+              promotionBaseQty: baseQty,
+              promotionBaseDiscount: baseDiscount
+            });
+          })
+        });
+      });
+    }
+
+    function removePromotionGroup(groupId) {
+      if (!groupId) return;
+      updateActiveOrder(function (order) {
+        return Object.assign({}, order, {
+          items: (order.items || []).filter(function (item) {
+            return !isPromotionOrderLine(item) || getPromotionGroupId(item) !== groupId;
+          })
+        });
+      });
+    }
+
+    function editPromotionGroup(group) {
+      if (!group || !group.groupId) return;
+      var nextNote = window.prompt(L("Ghi chú cho combo / Combo note"), group.note || "");
+      if (nextNote === null) return;
+      updateActiveOrder(function (order) {
+        return Object.assign({}, order, {
+          items: (order.items || []).map(function (item) {
+            return isPromotionOrderLine(item) && getPromotionGroupId(item) === group.groupId
+              ? Object.assign({}, item, { note: nextNote.trim() })
+              : item;
+          })
+        });
+      });
+    }
+
     // Direct qty edit (used by the new POS input box).
     function setItemQty(itemId, qty) {
       if (qty === "" || qty === null || qty === undefined) return;
       updateActiveOrder(function (order) {
+        var targetItem = (order.items || []).find(function (item) { return item.id === itemId; });
+        if (targetItem && targetItem.promotionId) return order;
         var nextItems = (order.items || [])
           .map(function (item) {
             var q = normalizeQtyForUnit(qty, getOrderItemUnit(item));
@@ -6150,8 +6755,11 @@
 
     function removeItem(itemId) {
       updateActiveOrder(function (order) {
+        var targetItem = (order.items || []).find(function (item) { return item.id === itemId; });
+        var promotionGroupId = targetItem && targetItem.promotionId ? targetItem.promotionGroupId : "";
         return Object.assign({}, order, {
           items: (order.items || []).filter(function (item) {
+            if (promotionGroupId) return item.promotionGroupId !== promotionGroupId;
             return item.id !== itemId;
           })
         });
@@ -6161,6 +6769,8 @@
     function toggleAddon(itemId, addOnId) {
       if (!itemId) return;
       updateActiveOrder(function (order) {
+        var targetItem = (order.items || []).find(function (item) { return item.id === itemId; });
+        if (targetItem && targetItem.promotionId) return order;
         var updated = false;
         return Object.assign({}, order, {
           items: (order.items || []).map(function (item) {
@@ -6204,6 +6814,8 @@
     function updateItemDiscount(itemId, field, value) {
       if (!itemId) return;
       updateActiveOrder(function (order) {
+        var targetItem = (order.items || []).find(function (item) { return item.id === itemId; });
+        if (targetItem && targetItem.promotionId) return order;
         var updated = false;
         return Object.assign({}, order, {
           items: (order.items || []).map(function (item) {
@@ -6369,6 +6981,61 @@
       });
     }
 
+    function getOrderPromotions(orderSnapshot) {
+      var byPromotion = {};
+      var groupItemsById = {};
+      (orderSnapshot.items || []).forEach(function (item) {
+        if (!item || !item.promotionId) return;
+        var groupId = item.promotionGroupId || item.id;
+        if (!groupItemsById[groupId]) groupItemsById[groupId] = [];
+        groupItemsById[groupId].push(item);
+      });
+      (orderSnapshot.items || []).forEach(function (item) {
+        if (!item || !item.promotionId) return;
+        var promotionKey = [item.promotionId, item.promotionCode || "", item.promotionName || ""].join("|");
+        if (!byPromotion[promotionKey]) {
+          byPromotion[promotionKey] = {
+            id: item.promotionId,
+            name: item.promotionName || "",
+            code: item.promotionCode || "",
+            qty: 0,
+            grossAmount: 0,
+            discountAmount: 0,
+            netAmount: 0,
+            items: [],
+            groups: {}
+          };
+        }
+        var entry = byPromotion[promotionKey];
+        var groupId = item.promotionGroupId || item.id;
+        if (!entry.groups[groupId]) {
+          entry.groups[groupId] = true;
+          entry.qty += getPromotionGroupQuantity(groupItemsById[groupId]) || 1;
+        }
+        var qty = Number(item.qty) || 0;
+        var originalUnitPrice = Number(item.originalPrice) || Number(item.price) || 0;
+        var grossLineAmount = Math.max(0, Math.round(originalUnitPrice * qty));
+        var netLineAmount = getItemLineNet(item, addOns);
+        entry.grossAmount += grossLineAmount;
+        entry.netAmount += netLineAmount;
+        entry.items.push({
+          productId: item.productId,
+          productName: item.name,
+          qty: qty,
+          originalUnitPrice: originalUnitPrice,
+          unitPrice: Number(item.price) || 0,
+          lineTotal: netLineAmount,
+          groupId: groupId
+        });
+      });
+      return Object.values(byPromotion).map(function (entry) {
+        var cleanEntry = Object.assign({}, entry);
+        delete cleanEntry.groups;
+        cleanEntry.discountAmount = Math.max(0, Math.round(cleanEntry.grossAmount - cleanEntry.netAmount));
+        return cleanEntry;
+      });
+    }
+
     function buildSalePayload(orderSnapshot, saleTotals, saleClientOpId) {
       return {
         clientOpId: saleClientOpId,
@@ -6401,12 +7068,18 @@
             discountAmount: itemDiscount,
             lineTotal: Math.max(0, Math.round((unitPrice * qty) - itemDiscount)),
             note: item.note || "",
+            promotionId: item.promotionId || "",
+            promotionName: item.promotionName || "",
+            promotionCode: item.promotionCode || "",
+            promotionGroupId: item.promotionGroupId || "",
+            reportScope: item.reportScope || "",
             addons: (item.addOnIds || []).map(function (id) {
               var a = getAddonById(id, addOns);
               return a ? { id: a.id, label: a.label, price: a.price } : { id: id };
             })
           };
-        })
+        }),
+        promotions: getOrderPromotions(orderSnapshot)
       };
     }
 
@@ -8634,6 +9307,291 @@
       }
     }
 
+    function updatePromotionDraft(field, value) {
+      setPromotionDraft(function (currentDraft) {
+        var nextDraft = Object.assign({}, currentDraft, { [field]: value });
+        if (field === "buyQty" || field === "giftQty") {
+          var targetRole = field === "buyQty" ? "buy" : "gift";
+          var nextQty = Math.max(1, Number(value) || 1);
+          nextDraft.items = (currentDraft.items || []).map(function (item) {
+            return item.role === targetRole ? Object.assign({}, item, { qty: nextQty }) : item;
+          });
+        }
+        if (field === "discountType" || field === "discountValue") {
+          nextDraft.items = (currentDraft.items || []).map(function (item) {
+            return item.role === "discount"
+              ? Object.assign({}, item, {
+                  discountType: field === "discountType" ? value : (currentDraft.discountType || "percent"),
+                  discountValue: field === "discountValue" ? Math.max(0, Number(value) || 0) : (Number(currentDraft.discountValue) || 0)
+                })
+              : item;
+          });
+        }
+        return nextDraft;
+      });
+    }
+
+    function resetPromotionDraft() {
+      setPromotionDraft({
+        id: null,
+        name: "",
+        code: "",
+        promoType: "combo",
+        price: 0,
+        discountType: "percent",
+        discountValue: 0,
+        buyQty: 1,
+        giftQty: 1,
+        image: "🎁",
+        description: "",
+        startsAt: "",
+        endsAt: "",
+        isActive: true,
+        items: []
+      });
+      setPromotionProductSearch("");
+    }
+
+    function startEditPromotion(promotion) {
+      var normalizedPromo = normalizePromotion(promotion);
+      setPromotionDraft({
+        id: normalizedPromo.id,
+        name: normalizedPromo.name,
+        code: normalizedPromo.code,
+        promoType: normalizedPromo.promoType || "combo",
+        price: Number(normalizedPromo.price) || 0,
+        discountType: normalizedPromo.discountType || "percent",
+        discountValue: Number(normalizedPromo.discountValue) || 0,
+        buyQty: Number(normalizedPromo.buyQty) || 1,
+        giftQty: Number(normalizedPromo.giftQty) || 1,
+        image: normalizedPromo.image || "🎁",
+        description: normalizedPromo.description || "",
+        startsAt: normalizedPromo.startsAt ? new Date(normalizedPromo.startsAt).toISOString().slice(0, 16) : "",
+        endsAt: normalizedPromo.endsAt ? new Date(normalizedPromo.endsAt).toISOString().slice(0, 16) : "",
+        isActive: normalizedPromo.isActive,
+        items: (normalizedPromo.items || []).map(function (item) {
+          return {
+            productId: item.productId,
+            productName: item.productName || (findProductById(item.productId) || {}).name || "",
+            qty: Math.max(0, Number(item.qty) || 0),
+            role: item.role || "bundle",
+            discountType: item.discountType || normalizedPromo.discountType || "",
+            discountValue: Number(item.discountValue || normalizedPromo.discountValue) || 0
+          };
+        })
+      });
+      setActiveView("settings");
+      setSettingsSection("promotion");
+    }
+
+    function addPromotionDraftItem(product) {
+      if (!product || !product.id) return;
+      setPromotionDraft(function (currentDraft) {
+        var draftType = currentDraft.promoType || "combo";
+        if (draftType === "item_discount") {
+          return Object.assign({}, currentDraft, {
+            items: [{
+              productId: product.id,
+              productName: product.name,
+              qty: 1,
+              role: "discount",
+              discountType: currentDraft.discountType || "percent",
+              discountValue: Number(currentDraft.discountValue) || 0
+            }]
+          });
+        }
+        if (draftType === "buy_get") {
+          var hasBuy = (currentDraft.items || []).some(function (item) { return item.role === "buy"; });
+          var hasGift = (currentDraft.items || []).some(function (item) { return item.role === "gift"; });
+          var nextRole = !hasBuy ? "buy" : (!hasGift ? "gift" : "gift");
+          var nextQty = nextRole === "buy"
+            ? Math.max(1, Number(currentDraft.buyQty) || 1)
+            : Math.max(1, Number(currentDraft.giftQty) || 1);
+          return Object.assign({}, currentDraft, {
+            items: (currentDraft.items || []).filter(function (item) {
+              return item.role !== nextRole;
+            }).concat({
+              productId: product.id,
+              productName: product.name,
+              qty: nextQty,
+              role: nextRole
+            })
+          });
+        }
+        var existing = (currentDraft.items || []).find(function (item) { return item.productId === product.id; });
+        if (existing) {
+          return Object.assign({}, currentDraft, {
+            items: (currentDraft.items || []).map(function (item) {
+              return item.productId === product.id
+                ? Object.assign({}, item, { qty: Math.max(1, Number(item.qty) || 0) + 1 })
+                : item;
+            })
+          });
+        }
+        return Object.assign({}, currentDraft, {
+          items: (currentDraft.items || []).concat({
+            productId: product.id,
+            productName: product.name,
+            qty: 1
+          })
+        });
+      });
+      setPromotionProductSearch("");
+    }
+
+    function updatePromotionDraftItemQty(productId, qty) {
+      setPromotionDraft(function (currentDraft) {
+        return Object.assign({}, currentDraft, {
+          items: (currentDraft.items || []).map(function (item) {
+            return item.productId === productId
+              ? Object.assign({}, item, { qty: Math.max(0, Number(qty) || 0) })
+              : item;
+          }).filter(function (item) {
+            return (Number(item.qty) || 0) > 0;
+          })
+        });
+      });
+    }
+
+    function removePromotionDraftItem(productId) {
+      setPromotionDraft(function (currentDraft) {
+        return Object.assign({}, currentDraft, {
+          items: (currentDraft.items || []).filter(function (item) {
+            return item.productId !== productId;
+          })
+        });
+      });
+    }
+
+    function buildPromotionDraftPayload() {
+      var cleanName = String(promotionDraft.name || "").trim();
+      var cleanCode = String(promotionDraft.code || "").trim().toUpperCase();
+      var promoId = promotionDraft.id || cleanCode || slugify(cleanName || uid("promo")).toUpperCase();
+      var promoType = promotionDraft.promoType || "combo";
+      var items = (promotionDraft.items || []).map(function (item) {
+        var product = findProductById(item.productId);
+        var role = item.role || (promoType === "item_discount" ? "discount" : "bundle");
+        var qty = Math.max(0, Number(item.qty) || 0);
+        if (promoType === "buy_get" && role === "buy") qty = Math.max(1, Number(promotionDraft.buyQty) || Number(item.qty) || 1);
+        if (promoType === "buy_get" && role === "gift") qty = Math.max(1, Number(promotionDraft.giftQty) || Number(item.qty) || 1);
+        return {
+          productId: item.productId,
+          productName: item.productName || (product && product.name) || item.productId,
+          qty: qty,
+          role: role,
+          discountType: promoType === "item_discount" ? (promotionDraft.discountType || "percent") : (item.discountType || ""),
+          discountValue: promoType === "item_discount" ? Math.max(0, Number(promotionDraft.discountValue) || 0) : Math.max(0, Number(item.discountValue) || 0),
+          buyQty: Math.max(1, Number(promotionDraft.buyQty) || 1),
+          giftQty: Math.max(1, Number(promotionDraft.giftQty) || 1)
+        };
+      }).filter(function (item) {
+        return item.productId && (Number(item.qty) || 0) > 0;
+      });
+      var computedPrice = getPromotionComputedPrice({
+        promoType: promoType,
+        price: promotionDraft.price,
+        discountType: promotionDraft.discountType,
+        discountValue: promotionDraft.discountValue,
+        buyQty: promotionDraft.buyQty,
+        giftQty: promotionDraft.giftQty,
+        items: items
+      });
+      var grossAmount = getPromotionGrossAmount({ items: items });
+      return {
+        id: promoId,
+        name: cleanName,
+        code: cleanCode || promoId,
+        promoType: promoType,
+        price: computedPrice,
+        discountType: promotionDraft.discountType || "percent",
+        discountValue: Math.max(0, Number(promotionDraft.discountValue) || 0),
+        buyQty: Math.max(1, Number(promotionDraft.buyQty) || 1),
+        giftQty: Math.max(1, Number(promotionDraft.giftQty) || 1),
+        discountAmount: Math.max(0, grossAmount - computedPrice),
+        image: String(promotionDraft.image || "🎁").trim(),
+        description: String(promotionDraft.description || "").trim(),
+        startsAt: promotionDraft.startsAt ? new Date(promotionDraft.startsAt).getTime() : null,
+        endsAt: promotionDraft.endsAt ? new Date(promotionDraft.endsAt).getTime() : null,
+        isActive: promotionDraft.isActive !== false,
+        items: items
+      };
+    }
+
+    function submitPromotion(event) {
+      event.preventDefault();
+      var payload = buildPromotionDraftPayload();
+      if (!payload.name) {
+        window.alert(L("Nhập tên khuyến mãi trước khi lưu. / Enter a promotion name before saving."));
+        return;
+      }
+      if (!payload.items.length) {
+        window.alert(L("Chọn sản phẩm cho khuyến mãi trước khi lưu. / Pick promotion products before saving."));
+        return;
+      }
+      if (payload.promoType === "combo" && (Number(payload.price) || 0) <= 0) {
+        window.alert(L("Nhập giá bán combo lớn hơn 0. / Enter a combo sale price greater than 0."));
+        return;
+      }
+      if (payload.promoType === "item_discount" && (Number(payload.discountValue) || 0) <= 0) {
+        window.alert(L("Nhập mức giảm giá cho món. / Enter the item discount value."));
+        return;
+      }
+      if (payload.promoType === "buy_get") {
+        var hasBuy = payload.items.some(function (item) { return item.role === "buy"; });
+        var hasGift = payload.items.some(function (item) { return item.role === "gift"; });
+        if (!hasBuy || !hasGift) {
+          window.alert(L("Chọn đủ món mua và món tặng. / Pick both buy and gift products."));
+          return;
+        }
+      }
+
+      var optimisticPromo = normalizePromotion(payload);
+      setPromotions(function (currentPromotions) {
+        var exists = currentPromotions.some(function (promo) { return promo.id === optimisticPromo.id; });
+        return exists
+          ? currentPromotions.map(function (promo) { return promo.id === optimisticPromo.id ? optimisticPromo : promo; })
+          : [optimisticPromo].concat(currentPromotions);
+      });
+
+      syncApi("/promotions", {
+        method: "POST",
+        body: payload
+      }).then(function (response) {
+        if (response && response.promotion) {
+          var savedPromo = normalizePromotion(response.promotion);
+          setPromotions(function (currentPromotions) {
+            return currentPromotions.map(function (promo) {
+              return promo.id === optimisticPromo.id ? savedPromo : promo;
+            });
+          });
+        }
+      }).catch(function (err) {
+        if (window && window.console) window.console.warn("save promotion failed", err);
+        pushToast("warning", L("Đã lưu tạm local, API khuyến mãi chưa sẵn sàng. / Saved locally; promotion API is not ready."));
+      });
+
+      resetPromotionDraft();
+      pushToast("success", L("Đã lưu khuyến mãi. / Promotion saved."));
+    }
+
+    function removePromotion(promotionId) {
+      if (!window.confirm(L("Ẩn khuyến mãi này khỏi màn hình bán hàng? / Hide this promotion from sales screens?"))) {
+        return;
+      }
+      setPromotions(function (currentPromotions) {
+        return currentPromotions.map(function (promo) {
+          return promo.id === promotionId ? Object.assign({}, promo, { isActive: false }) : promo;
+        });
+      });
+      syncApi("/promotions", {
+        method: "DELETE",
+        body: { id: promotionId }
+      }).catch(function (err) {
+        if (window && window.console) window.console.warn("remove promotion failed", err);
+      });
+      if (promotionDraft.id === promotionId) resetPromotionDraft();
+    }
+
     function updateComponentDraft(field, value) {
       setComponentDraft(function (currentDraft) {
         return Object.assign({}, currentDraft, { [field]: value });
@@ -10064,13 +11022,15 @@
           return getAddonById(addOnId, addOns) || { id: addOnId, label: addOnId, price: 0 };
         });
         var itemTotal = calculateOrder(normalizeOrder({ items: [item] }), addOns).total;
+        var isPromotionLine = !!item.promotionId;
         return html`
           <article className="kiosk-cart-item" key=${item.id}>
             <div className="kiosk-cart-line">
               <div>
                 <strong>${index + 1}. ${item.name}</strong>
-                ${itemAddOns.length || item.note ? html`
+                ${itemAddOns.length || item.note || isPromotionLine ? html`
                   <div className="kiosk-cart-notes">
+                    ${isPromotionLine ? html`<span>${item.promotionName || L("Khuyến mãi / Promotion")}</span>` : null}
                     ${itemAddOns.map(function (addOn) {
                       return html`<span key=${addOn.id}>${L(addOn.label)}${addOn.price ? " +" + formatCurrency(addOn.price) : ""}</span>`;
                     })}
@@ -10081,9 +11041,9 @@
               <button type="button" className="ghost-btn kiosk-remove-btn" onClick=${function () { removeKioskItem(item.id); }}>×</button>
             </div>
             <div className="kiosk-cart-controls">
-              <button type="button" className="qty-btn" onClick=${function () { adjustKioskItemQty(item.id, -1); }}>−</button>
+              <button type="button" className="qty-btn" disabled=${isPromotionLine} onClick=${function () { adjustKioskItemQty(item.id, -1); }}>−</button>
               <strong>${formatQuantity(item.qty, 2)}</strong>
-              <button type="button" className="qty-btn" onClick=${function () { adjustKioskItemQty(item.id, 1); }}>+</button>
+              <button type="button" className="qty-btn" disabled=${isPromotionLine} onClick=${function () { adjustKioskItemQty(item.id, 1); }}>+</button>
               <span>${formatCurrency(itemTotal)}</span>
             </div>
           </article>
@@ -10258,7 +11218,7 @@
                     onInput=${function (event) { setKioskSearchTerm(event.target.value); }}
                   />
                 </label>
-                <span className="kiosk-result-count">${kioskFilteredProducts.length} ${KT("showing")}</span>
+                <span className="kiosk-result-count">${kioskFilteredProducts.length + kioskFilteredPromotions.length} ${KT("showing")}</span>
               </div>
               <div className="kiosk-category-rail" aria-label=${KT("categories")}>
                 ${kioskCategoryOptions.map(function (category) {
@@ -10276,6 +11236,33 @@
                 })}
               </div>
               <div className="kiosk-product-grid">
+                ${kioskFilteredPromotions.map(function (promotion, promotionIndex) {
+                  return html`
+                    <article className="kiosk-product-card promotion-product-card" key=${"kiosk-promo-" + [promotion.id, promotionIndex].filter(Boolean).join("-")}>
+                      <span className="kiosk-product-badge">${getPromotionTemplateLabel(promotion)}</span>
+                      <div className="pos-product-media product-media-fit">
+                        ${isProductImageUrl(promotion.image)
+                          ? html`<img src=${promotion.image} alt=${promotion.name} />`
+                          : html`<span>${promotion.image || "🎁"}</span>`}
+                      </div>
+                      <div className="kiosk-product-copy">
+                        <h3>${promotion.name}</h3>
+                        <p>${promotion.description || (promotion.items || []).map(function (item) {
+                          return formatQuantity(item.qty, 2) + "× " + (item.productName || item.productId);
+                        }).join(" · ")}</p>
+                      </div>
+                      <div className="kiosk-product-bottom">
+                        <strong>${formatCurrency(getPromotionComputedPrice(promotion))}</strong>
+                        <button
+                          type="button"
+                          className="pos-add-btn kiosk-add-btn"
+                          aria-label=${KT("add") + " " + promotion.name}
+                          onClick=${function () { addPromotionToKioskCart(promotion); }}
+                        >+</button>
+                      </div>
+                    </article>
+                  `;
+                })}
                 ${kioskFilteredProducts.map(function (product) {
                   var soldOut = isKioskProductSoldOut(product);
                   return html`
@@ -10535,6 +11522,10 @@
           })
         : filteredProducts
       ).slice(0, 40);
+      var catalogPromotions = (barcodeInput
+        ? activePromotions.filter(function (promotion) { return promotionMatchesSearch(promotion, barcodeInput); })
+        : filteredPromotions
+      ).slice(0, 20);
       var kioskPublicUrl = (function () {
         try {
           var url = new URL(window.location.href);
@@ -10761,6 +11752,38 @@
               ` : null}
 
               <div className="pos-product-grid">
+                ${catalogPromotions.map(function (promotion, promotionIndex) {
+                  var grossAmount = getPromotionGrossAmount(promotion);
+                  var discountAmount = Math.max(0, grossAmount - getPromotionComputedPrice(promotion));
+                  return html`
+                    <article key=${"promo-" + [promotion.id, promotionIndex].filter(Boolean).join("-")} className="pos-product-card promotion-product-card">
+                      <div className="promotion-card-badge">${getPromotionTemplateLabel(promotion)}</div>
+                      <div className="pos-product-media product-media-fit">
+                        ${isProductImageUrl(promotion.image)
+                          ? html`<img src=${promotion.image} alt=${promotion.name} />`
+                          : html`<span>${promotion.image || "🎁"}</span>`}
+                      </div>
+                      <div className="pos-product-copy">
+                        <h3>${promotion.name}</h3>
+                        <p>${promotion.description || (promotion.items || []).map(function (item) {
+                          return formatQuantity(item.qty, 2) + "× " + (item.productName || item.productId);
+                        }).join(" · ")}</p>
+                      </div>
+                      <div className="pos-product-meta">
+                        <strong>${formatCurrency(getPromotionComputedPrice(promotion))}</strong>
+                        <small>${discountAmount ? L("Giảm giá / Discount") + " " + formatCurrency(discountAmount) : L("Khuyến mãi / Promotion")}</small>
+                      </div>
+                      <button
+                        type="button"
+                        className="pos-add-btn"
+                        aria-label=${L("Thêm / Add") + " " + promotion.name}
+                        onClick=${function () { addPromotionToOrder(promotion); }}
+                      >
+                        +
+                      </button>
+                    </article>
+                  `;
+                })}
                 ${catalogProducts.length ? catalogProducts.map(function (product, productIndex) {
                   return html`
                     <article key=${[product.id, product.barcode, productIndex].filter(Boolean).join("-")} className="pos-product-card">
@@ -10787,9 +11810,9 @@
                       </button>
                     </article>
                   `;
-                }) : html`
+                }) : (!catalogPromotions.length ? html`
                   <div className="empty-state align-left">${L("Không tìm thấy sản phẩm phù hợp. / No matching products.")}</div>
-                `}
+                ` : null)}
               </div>
             </section>` : null}
           </div>
@@ -10868,8 +11891,85 @@
             </div>
 
             <div className="order-items">
-              ${activeOrder.items.length
-                ? activeOrder.items.map(function (item) {
+              ${orderBillRows.length
+                ? orderBillRows.map(function (row) {
+                    if (row.type === "promotion") {
+                      return html`
+                        <article key=${row.groupId} className="order-item promotion-order-group">
+                          <div className="order-item-head">
+                            <div>
+                              <p className="eyebrow">${getPromotionTemplateLabel({ promoType: row.promotionType || "combo" })}</p>
+                              <h3>${row.promotionName}</h3>
+                              <p>${row.items.map(function (child) { return child.name; }).join(" + ")}</p>
+                            </div>
+                            <button type="button" className="ghost-btn danger-text" onClick=${function () {
+                              removePromotionGroup(row.groupId);
+                            }}>
+                              ${L("Xóa combo / Remove Combo")}
+                            </button>
+                          </div>
+
+                          <div className="promotion-group-lines">
+                            ${row.items.map(function (child) {
+                              return html`
+                                <div className="promotion-group-line" key=${child.id}>
+                                  <span>• ${child.name} ×${formatQuantity(child.qty, 2)}</span>
+                                  <strong>${formatCurrency(child.originalLineTotal)}</strong>
+                                </div>
+                              `;
+                            })}
+                          </div>
+
+                          <div className="promotion-group-summary">
+                            <div><span>${L("Giá gốc / Original")}</span><strong>${formatCurrency(row.originalSubtotal)}</strong></div>
+                            <div><span>${L("Giảm giá / Discount")}</span><strong>-${formatCurrency(row.discountAmount)}</strong></div>
+                            <div className="promotion-group-total"><span>${L("Thành tiền / Final")}</span><strong>${formatCurrency(row.finalAmount)}</strong></div>
+                          </div>
+
+                          <div className="qty-row promotion-group-controls">
+                            <button type="button" className="qty-btn" onClick=${function () {
+                              adjustPromotionGroupQty(row.groupId, -1);
+                            }}>-</button>
+                            <${LocalNumberInput}
+                              min="1"
+                              step="1"
+                              style=${{
+                                width: "50px",
+                                textAlign: "center",
+                                border: "none",
+                                background: "transparent",
+                                fontSize: "1rem",
+                                fontWeight: "bold",
+                                color: "inherit",
+                                padding: "0"
+                              }}
+                              value=${row.quantity || 1}
+                              onChange=${function (val) {
+                                setPromotionGroupQty(row.groupId, val);
+                              }}
+                            />
+                            <button type="button" className="qty-btn" onClick=${function () {
+                              adjustPromotionGroupQty(row.groupId, 1);
+                            }}>+</button>
+                            <span className="line-total">
+                              <strong>${formatCurrency(row.finalAmount)}</strong>
+                            </span>
+                          </div>
+
+                          ${row.note ? html`
+                            <div className="order-item-note">
+                              <strong>${L("Ghi chú / Note")}:</strong>
+                              <span>${row.note}</span>
+                            </div>
+                          ` : null}
+
+                          <div className="promotion-group-actions">
+                            <button type="button" className="ghost-btn" onClick=${function () { editPromotionGroup(row); }}>${L("Sửa / Edit")}</button>
+                          </div>
+                        </article>
+                      `;
+                    }
+                    var item = row.item;
                     var itemUnit = getOrderItemUnit(item);
                     var itemDiscountType = item.discountType === "amount" ? "amount" : "percent";
                     var itemDiscountValue = Number(item.discountValue) || 0;
@@ -11104,13 +12204,31 @@
                  row anymore. The displayed amount IS what the customer pays. -->
             <div className="summary-list">
               <div><span>${L("Số món / Items")}</span><strong>${totals.itemCount}</strong></div>
-              ${totals.itemDiscount > 0
-                ? html`<div><span>${L("Giảm từng món / Item Discounts")}</span><strong>-${formatCurrency(totals.itemDiscount)}</strong></div>`
+              <div><span>${L("Tổng giá gốc / Original subtotal")}</span><strong>${formatCurrency(totals.subtotal)}</strong></div>
+              ${billDiscountBreakdown.promotionDiscounts.length ? html`
+                <div className="summary-subhead"><span>${L("Giảm giá / Discounts")}</span><strong></strong></div>
+                ${billDiscountBreakdown.promotionDiscounts.map(function (row) {
+                  return html`
+                    <div className="summary-discount-row" key=${row.id}>
+                      <span>${row.label}</span>
+                      <strong>-${formatCurrency(row.amount)}</strong>
+                    </div>
+                  `;
+                })}
+              ` : null}
+              ${billDiscountBreakdown.itemDiscount > 0
+                ? html`<div className="summary-discount-row"><span>${L("Giảm giá món / Item Discount")}</span><strong>-${formatCurrency(billDiscountBreakdown.itemDiscount)}</strong></div>`
                 : null}
-              ${totals.orderDiscount > 0
-                ? html`<div><span>${L("Giảm toàn đơn / Order Discount")}</span><strong>-${formatCurrency(totals.orderDiscount)}</strong></div>`
+              ${billDiscountBreakdown.orderDiscount > 0
+                ? html`<div className="summary-discount-row"><span>${L("Giảm toàn đơn / Order Discount")}</span><strong>-${formatCurrency(billDiscountBreakdown.orderDiscount)}</strong></div>`
                 : null}
-              <div className="summary-total"><span>${L("Tổng cộng / Total")}</span><strong>${formatCurrency(totals.total)}</strong></div>
+              ${billDiscountBreakdown.legacyDiscount > 0
+                ? html`<div className="summary-discount-row"><span>${L("Giảm giá / Discount")}</span><strong>-${formatCurrency(billDiscountBreakdown.legacyDiscount)}</strong></div>`
+                : null}
+              ${billDiscountBreakdown.totalDiscount > 0
+                ? html`<div><span>${L("Tổng giảm giá / Total Discount")}</span><strong>-${formatCurrency(billDiscountBreakdown.totalDiscount)}</strong></div>`
+                : null}
+              <div className="summary-total"><span>${L("Tổng / Total")}</span><strong>${formatCurrency(totals.total)}</strong></div>
               <div style=${{ fontSize: 11, fontStyle: "italic", color: "#7b6b5d", marginTop: -4 }}>
                 ${L("(Giá đã bao gồm VAT) / (VAT included)")}
               </div>
@@ -11441,6 +12559,29 @@
                   })}
                 </div>
               ` : html`<div className="empty-state">${L("Chưa có sản phẩm bán chạy trong khoảng này. / No best sellers in this range.")}</div>`}
+            </article>
+
+            <article className="surface section-card dashboard-promotion-products">
+              <div className="section-top">
+                <div>
+                  <h2 className="section-title">${L("Combo / Khuyến mãi bán chạy / Promo Best Sellers")}</h2>
+                </div>
+              </div>
+              ${dashboardMetrics.promotionProducts && dashboardMetrics.promotionProducts.length ? html`
+                <div className="list-stack compact-list">
+                  ${dashboardMetrics.promotionProducts.map(function (p, i) {
+                    return html`
+                      <article className="list-row" key=${p.key || p.name + i}>
+                        <div>
+                          <strong>#${i + 1} ${p.name}</strong>
+                          <p>${formatQuantity(p.qty, 2)} ${L("combo đã bán / combos sold")}${p.code ? " · " + p.code : ""}</p>
+                        </div>
+                        <strong>${formatCurrency(p.revenue)}</strong>
+                      </article>
+                    `;
+                  })}
+                </div>
+              ` : html`<div className="empty-state">${L("Chưa có combo bán ra trong khoảng này. / No promo sales in this range.")}</div>`}
             </article>
 
             <article className="surface section-card dashboard-order-history">
@@ -14246,6 +15387,7 @@
     function renderSettingsView() {
       var settingsTabs = [
         { id: "general", label: "Chung / General" },
+        { id: "promotion", label: "Khuyến mãi / Promotions" },
         { id: "invoice", label: "Hóa đơn / Invoice" }
       ];
       if (currentUser && currentUser.role === "admin") {
@@ -14271,6 +15413,14 @@
         synced: "Đã đồng bộ / Synced",
         error: "Lỗi đồng bộ / Sync error"
       };
+      var promotionTemplateOptions = [
+        { id: "item_discount", label: "Giảm giá món / Item Discount", help: "Chọn 1 món và mức giảm / Pick one item and discount" },
+        { id: "combo", label: "Combo / Combo", help: "Gom nhiều món thành giá bán riêng / Bundle items into one price" },
+        { id: "buy_get", label: "Mua tặng / Buy Get", help: "Mua món A tặng món B / Buy item A, gift item B" }
+      ];
+      var totalStock = products.reduce(function (sum, product) {
+        return sum + (Number(product.rawStock != null ? product.rawStock : product.stock) || 0);
+      }, 0);
 
       return html`
         <section className="settings-layout">
@@ -14697,8 +15847,8 @@
               </div>
             ` : null}
 
-            ${settingsSection === "product" ? html`
-              <div className="stack-view settings-pane">
+            ${settingsSection === "promotion" ? html`
+              <div className="stack-view settings-pane promotion-settings-pane">
                 <div className="card-grid card-grid-4">
                   <article className="metric-card surface">
                     <span className="metric-label">${L("Danh mục / Categories")}</span>
@@ -14707,6 +15857,10 @@
                   <article className="metric-card surface">
                     <span className="metric-label">${L("Add-ons")}</span>
                     <strong>${addOns.length}</strong>
+                  </article>
+                  <article className="metric-card surface">
+                    <span className="metric-label">${L("Khuyến mãi / Promotions")}</span>
+                    <strong>${promotions.length}</strong>
                   </article>
                   <article className="metric-card surface">
                     <span className="metric-label">${L("Tổng tồn kho / Total Stock")}</span>
@@ -14718,7 +15872,7 @@
                   </article>
                 </div>
 
-                <div className="split-grid">
+                <div className=${"split-grid" + (settingsSection === "promotion" ? " promotion-first-grid" : "")}>
                   <section className="surface section-card form-card">
                     <div className="section-top">
                       <div>
@@ -14799,6 +15953,156 @@
                             <div className="row-actions">
                               <button className="ghost-btn" onClick=${function () { startEditAddOn(addOn); }}>${L("Sửa / Edit")}</button>
                               <button className="ghost-btn danger-text" onClick=${function () { removeAddOn(addOn.id); }}>${L("Xóa / Remove")}</button>
+                            </div>
+                          </article>
+                        `;
+                      })}
+                    </div>
+                  </section>
+
+                  <section className="surface section-card form-card promotion-settings-card">
+                    <div className="section-top">
+                      <div>
+                        <p className="eyebrow">${L("Khuyến mãi / Promotions")}</p>
+                        <h2 className="section-title">${promotionDraft.id ? L("Sửa chương trình / Edit Promotion") : L("Tạo chương trình khuyến mãi / Create Promotion")}</h2>
+                      </div>
+                      ${promotionDraft.id ? html`<button type="button" className="ghost-btn" onClick=${resetPromotionDraft}>${L("Hủy / Cancel")}</button>` : null}
+                    </div>
+                    <form className="form-card" onSubmit=${submitPromotion}>
+                      <div className="promotion-template-grid" role="radiogroup" aria-label=${L("Loại khuyến mãi / Promotion type")}>
+                        ${promotionTemplateOptions.map(function (option) {
+                          var active = (promotionDraft.promoType || "combo") === option.id;
+                          return html`
+                            <label key=${option.id} className=${"promotion-template-option" + (active ? " is-active" : "")}>
+                              <input
+                                type="radio"
+                                name="promotion-template"
+                                checked=${active}
+                                onChange=${function () {
+                                  setPromotionDraft(function (currentDraft) {
+                                    return Object.assign({}, currentDraft, {
+                                      promoType: option.id,
+                                      items: option.id === currentDraft.promoType ? currentDraft.items : [],
+                                      price: option.id === "combo" ? currentDraft.price : 0,
+                                      discountType: currentDraft.discountType || "percent",
+                                      discountValue: option.id === "item_discount" ? currentDraft.discountValue : 0,
+                                      buyQty: currentDraft.buyQty || 1,
+                                      giftQty: currentDraft.giftQty || 1
+                                    });
+                                  });
+                                }}
+                              />
+                              <span>
+                                <strong>${L(option.label)}</strong>
+                                <small>${L(option.help)}</small>
+                              </span>
+                            </label>
+                          `;
+                        })}
+                      </div>
+                      <div className="field-grid">
+                        <label className="field"><span>${L("Tên khuyến mãi / Promotion Name")}</span><input value=${promotionDraft.name} onInput=${function (event) { updatePromotionDraft("name", event.target.value); }} required /></label>
+                        <label className="field"><span>${L("Mã khuyến mãi / Promo Code")}</span><input value=${promotionDraft.code} onInput=${function (event) { updatePromotionDraft("code", event.target.value.toUpperCase()); }} /></label>
+                        ${(promotionDraft.promoType || "combo") === "combo" ? html`
+                          <label className="field"><span>${L("Giá bán combo / Combo Sale Price")}</span><input type="number" min="0" value=${promotionDraft.price} onInput=${function (event) { updatePromotionDraft("price", event.target.value); }} required /></label>
+                        ` : null}
+                        ${(promotionDraft.promoType || "combo") === "item_discount" ? html`
+                          <label className="field">
+                            <span>${L("Kiểu giảm / Discount Type")}</span>
+                            <select value=${promotionDraft.discountType || "percent"} onChange=${function (event) { updatePromotionDraft("discountType", event.target.value); }}>
+                              <option value="percent">${L("Phần trăm / Percent")}</option>
+                              <option value="amount">${L("Số tiền / Amount")}</option>
+                            </select>
+                          </label>
+                          <label className="field"><span>${L("Mức giảm / Discount Value")}</span><input type="number" min="0" value=${promotionDraft.discountValue} onInput=${function (event) { updatePromotionDraft("discountValue", event.target.value); }} required /></label>
+                        ` : null}
+                        ${(promotionDraft.promoType || "combo") === "buy_get" ? html`
+                          <label className="field"><span>${L("Số lượng mua / Buy Qty")}</span><input type="number" min="1" value=${promotionDraft.buyQty} onInput=${function (event) { updatePromotionDraft("buyQty", event.target.value); }} /></label>
+                          <label className="field"><span>${L("Số lượng tặng / Gift Qty")}</span><input type="number" min="1" value=${promotionDraft.giftQty} onInput=${function (event) { updatePromotionDraft("giftQty", event.target.value); }} /></label>
+                        ` : null}
+                        <label className="field"><span>${L("Ảnh hoặc icon / Image or Icon")}</span><input value=${promotionDraft.image} onInput=${function (event) { updatePromotionDraft("image", event.target.value); }} /></label>
+                        <label className="field"><span>${L("Bắt đầu / Starts")}</span><input type="datetime-local" value=${promotionDraft.startsAt} onInput=${function (event) { updatePromotionDraft("startsAt", event.target.value); }} /></label>
+                        <label className="field"><span>${L("Kết thúc / Ends")}</span><input type="datetime-local" value=${promotionDraft.endsAt} onInput=${function (event) { updatePromotionDraft("endsAt", event.target.value); }} /></label>
+                      </div>
+                      <label className="field">
+                        <span>${L("Mô tả hiển thị / Display Description")}</span>
+                        <textarea rows="2" value=${promotionDraft.description} onInput=${function (event) { updatePromotionDraft("description", event.target.value); }}></textarea>
+                      </label>
+                      <label className="toggle-row">
+                        <input type="checkbox" checked=${promotionDraft.isActive !== false} onChange=${function (event) { updatePromotionDraft("isActive", event.target.checked); }} />
+                        <span>${L("Hiển thị ở POS/Kiosk / Show in POS/Kiosk")}</span>
+                      </label>
+                      <div className="field">
+                        <span>${L("Sản phẩm áp dụng / Promotion Items")}</span>
+                        <input
+                          value=${promotionProductSearch}
+                          placeholder=${(promotionDraft.promoType || "combo") === "item_discount"
+                            ? L("Tìm món cần giảm giá... / Search item to discount...")
+                            : (promotionDraft.promoType || "combo") === "buy_get"
+                              ? L("Chọn món mua trước, rồi chọn món tặng... / Pick buy item first, then gift item...")
+                              : L("Tìm sản phẩm để thêm vào combo... / Search products to add...")}
+                          onInput=${function (event) { setPromotionProductSearch(event.target.value); }}
+                        />
+                      </div>
+                      ${promotionProductSearch ? html`
+                        <div className="management-list compact-list">
+                          ${products.filter(function (product) {
+                            var query = normalizeSearchText(promotionProductSearch);
+                            return query && normalizeSearchText([product.name, product.id, product.barcode, product.skuCode].filter(Boolean).join(" ")).indexOf(query) !== -1;
+                          }).slice(0, 6).map(function (product) {
+                            return html`
+                              <article className="list-row list-row-actions promotion-pick-row" key=${"promo-pick-" + product.id}>
+                                <div>
+                                  <strong>${product.name}</strong>
+                                  <p>${product.id} · ${formatCurrency(product.price)}</p>
+                                </div>
+                                <button
+                                  type="button"
+                                  className="icon-action-btn"
+                                  aria-label=${L("Thêm vào khuyến mãi / Add to promotion") + " " + product.name}
+                                  onClick=${function () { addPromotionDraftItem(product); }}
+                                >+</button>
+                              </article>
+                            `;
+                          })}
+                        </div>
+                      ` : null}
+                      <div className="management-list">
+                        ${(promotionDraft.items || []).length ? promotionDraft.items.map(function (item) {
+                          var product = findProductById(item.productId);
+                          return html`
+                            <article key=${"promo-item-" + item.productId} className="list-row list-row-actions">
+                              <div>
+                                <strong>${item.role === "buy" ? L("Mua / Buy") + ": " : item.role === "gift" ? L("Tặng / Gift") + ": " : item.role === "discount" ? L("Giảm / Discount") + ": " : ""}${(product && product.name) || item.productName || item.productId}</strong>
+                                <p>${formatCurrency(product ? product.price : 0)} · ${item.productId}</p>
+                              </div>
+                              <div className="row-actions stock-editor">
+                                <${LocalNumberInput}
+                                  min="0"
+                                  step="1"
+                                  value=${item.qty}
+                                  onChange=${function (val) { updatePromotionDraftItemQty(item.productId, val); }}
+                                />
+                                <button type="button" className="ghost-btn danger-text" onClick=${function () { removePromotionDraftItem(item.productId); }}>${L("Xóa / Remove")}</button>
+                              </div>
+                            </article>
+                          `;
+                        }) : html`<div className="empty-state align-left">${L("Chưa chọn sản phẩm cho khuyến mãi. / No promotion items selected.")}</div>`}
+                      </div>
+                      <button type="submit" className="primary-btn">${promotionDraft.id ? L("Lưu khuyến mãi / Save Promotion") : L("Tạo khuyến mãi / Create Promotion")}</button>
+                    </form>
+                    <div className="management-list">
+                      ${promotions.map(function (promotion) {
+                        var normalizedPromo = normalizePromotion(promotion);
+                        return html`
+                          <article key=${normalizedPromo.id} className="list-row list-row-actions">
+                            <div>
+                              <strong>${normalizedPromo.image || "🎁"} ${normalizedPromo.name}</strong>
+                              <p>${getPromotionTemplateLabel(normalizedPromo)} · ${normalizedPromo.code || normalizedPromo.id} · ${formatCurrency(getPromotionComputedPrice(normalizedPromo))} · ${normalizedPromo.isActive ? L("Đang bật / Active") : L("Đang ẩn / Hidden")}</p>
+                            </div>
+                            <div className="row-actions">
+                              <button type="button" className="ghost-btn" onClick=${function () { startEditPromotion(normalizedPromo); }}>${L("Sửa / Edit")}</button>
+                              <button type="button" className="ghost-btn danger-text" onClick=${function () { removePromotion(normalizedPromo.id); }}>${L("Ẩn / Hide")}</button>
                             </div>
                           </article>
                         `;

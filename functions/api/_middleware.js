@@ -53,6 +53,7 @@ function isAuthorized(role, path, method) {
     if (path.startsWith("/api/sales") && (method === "POST" || method === "GET")) return true;
     if (path.startsWith("/api/orders") && (method === "POST" || method === "GET")) return true;
     if (path === "/api/products" && method === "GET") return true;
+    if (path.startsWith("/api/promotions") && method === "GET") return true;
     if (path.startsWith("/api/categories") && method === "GET") return true;
     if (path.startsWith("/api/addons") && method === "GET") return true;
     if (path.startsWith("/api/sync/pull") && method === "GET") return true;
@@ -65,6 +66,7 @@ function isAuthorized(role, path, method) {
     if (path === "/api/audit" && method === "POST") return true;
     if (path.startsWith("/api/sales") && (method === "POST" || method === "GET")) return true;
     if (path === "/api/products" && method === "GET") return true;
+    if (path.startsWith("/api/promotions") && method === "GET") return true;
     if (path.startsWith("/api/categories") && method === "GET") return true;
     if (path.startsWith("/api/addons") && method === "GET") return true;
     if (path.startsWith("/api/sync/pull") && method === "GET") return true;
@@ -78,6 +80,7 @@ function isAuthorized(role, path, method) {
     if (path === "/api/audit" && method === "POST") return true;
     if (path.startsWith("/api/sales") && method === "POST") return true;
     if (path === "/api/products" && method === "GET") return true;
+    if (path.startsWith("/api/promotions") && method === "GET") return true;
     if (path.startsWith("/api/categories") && method === "GET") return true;
     if (path.startsWith("/api/addons") && method === "GET") return true;
     if (path.startsWith("/api/sync/pull") && method === "GET") return true;
@@ -101,6 +104,7 @@ function isAuthorized(role, path, method) {
     }
     if (
       (path.startsWith("/api/products") ||
+       path.startsWith("/api/promotions") ||
        path.startsWith("/api/categories") ||
        path.startsWith("/api/addons") ||
        path.startsWith("/api/sync/pull")) &&
@@ -120,6 +124,7 @@ function isAuthorized(role, path, method) {
     if (path.startsWith("/api/sync/pull") && method === "GET") return true;
     if (
       (path.startsWith("/api/products") ||
+       path.startsWith("/api/promotions") ||
        path.startsWith("/api/categories") ||
        path.startsWith("/api/addons")) &&
       method === "GET"
@@ -145,6 +150,7 @@ function isPublicKioskRoute(path, method) {
   // Public kiosk is intentionally narrow: customers can read the menu and
   // submit a new order, but cannot pull sync snapshots or view sales history.
   if (path === "/api/products" && method === "GET") return true;
+  if (path.startsWith("/api/promotions") && method === "GET") return true;
   if (path.startsWith("/api/categories") && method === "GET") return true;
   if (path.startsWith("/api/addons") && method === "GET") return true;
   if (path.startsWith("/api/sales") && method === "POST") return true;

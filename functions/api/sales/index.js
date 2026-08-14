@@ -81,6 +81,50 @@ function getItemAddOnIds(item) {
     .filter(Boolean);
 }
 
+function safeJsonArray(value) {
+  if (Array.isArray(value)) return value;
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function normalizeAppliedPromotions(value) {
+  return safeJsonArray(value).map((promo) => ({
+    id: String(promo.id || promo.promotionId || promo.promotion_id || "").trim(),
+    name: String(promo.name || promo.promotionName || promo.promotion_name || "").trim(),
+    code: String(promo.code || promo.promotionCode || promo.promotion_code || "").trim(),
+    qty: Math.max(1, Math.round(Number(promo.qty) || 1)),
+    grossAmount: Math.max(0, Math.round(Number(promo.grossAmount || promo.gross_amount) || 0)),
+    discountAmount: Math.max(0, Math.round(Number(promo.discountAmount || promo.discount_amount) || 0)),
+    netAmount: Math.max(0, Math.round(Number(promo.netAmount || promo.net_amount || promo.price) || 0)),
+    items: safeJsonArray(promo.items || promo.itemsJson || promo.items_json),
+})).filter((promo) => promo.id && promo.name);
+}
+
+let promotionsStorageReadyCache = null;
+
+async function hasPromotionsStorage(db) {
+  if (promotionsStorageReadyCache !== null) return promotionsStorageReadyCache;
+  try {
+    const itemInfo = await db.prepare("PRAGMA table_info(sale_items)").all();
+    const itemColumns = new Set((itemInfo.results || []).map((row) => row.name));
+    const promoInfo = await db.prepare("PRAGMA table_info(sale_promotions)").all();
+    const promoColumns = new Set((promoInfo.results || []).map((row) => row.name));
+    promotionsStorageReadyCache = itemColumns.has("promotion_id") &&
+      itemColumns.has("report_scope") &&
+      promoColumns.has("promotion_id") &&
+      promoColumns.has("net_amount");
+    return promotionsStorageReadyCache;
+  } catch (_) {
+    promotionsStorageReadyCache = false;
+    return false;
+  }
+}
+
 // GET /api/sales?from=&to=&limit=
 export const onRequestGet = async ({ env, request }) => {
   const url = new URL(request.url);
@@ -137,6 +181,8 @@ export const onRequestPost = async ({ env, request, data }) => {
     await ensureSalesStorageCompatibility(env.DB);
   }
   const body = await readJson(request);
+  const appliedPromotions = normalizeAppliedPromotions(body && (body.promotions || body.appliedPromotions || body.promotions_json));
+  const promotionsStorageReady = await hasPromotionsStorage(env.DB);
 
   if (body && body.repairStatusOnly) {
     if (!data || !data.user || data.user.role !== "admin") {
@@ -238,6 +284,9 @@ export const onRequestPost = async ({ env, request, data }) => {
       ts
     ).run();
     await env.DB.prepare("DELETE FROM sale_items WHERE sale_id = ?").bind(saleId).run();
+    if (promotionsStorageReady) {
+      await env.DB.prepare("DELETE FROM sale_promotions WHERE sale_id = ?").bind(saleId).run();
+    }
     return json({ ok: true, id: saleId, orderId: canonicalOrderId || body.orderId || null, orderStatus: "cancelled" });
   }
 
@@ -625,31 +674,86 @@ export const onRequestPost = async ({ env, request, data }) => {
   stmts.push(
     env.DB.prepare("DELETE FROM sale_items WHERE sale_id = ?").bind(saleId)
   );
+  if (promotionsStorageReady) {
+    stmts.push(
+      env.DB.prepare("DELETE FROM sale_promotions WHERE sale_id = ?").bind(saleId)
+    );
+  }
 
   enriched.forEach((it) => {
     const qty = Number(it.qty) || 0;
     const lineId = String(it.lineId || it.id || "").trim() || uid("si");
 
+    const baseBinds = [
+      lineId,
+      saleId,
+      it.productId || null,
+      it.productName || it.name || "",
+      qty,
+      Number(it.unitPrice) || Number(it.price) || 0,
+      it.addonsJson || (it.addons ? JSON.stringify(it.addons) : null),
+      Number(it.addonsTotal) || 0,
+      // B2: server-recomputed line total
+      Number(it.__lineTotal) || (Number(it.unitPrice) || 0) * qty,
+      Number(it.__discountAmount) || 0,
+      it.unitCost || 0
+    ];
+
+    if (promotionsStorageReady) {
+      stmts.push(
+        env.DB.prepare(
+          `INSERT INTO sale_items
+             (id, sale_id, product_id, product_name, qty, unit_price,
+              addons_json, addons_total, line_total, discount_amount, unit_cost,
+              promotion_id, promotion_name, report_scope)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).bind(
+          ...baseBinds,
+          it.promotionId || it.promotion_id || null,
+          it.promotionName || it.promotion_name || null,
+          it.reportScope || it.report_scope || (it.promotionId || it.promotion_id ? "promotion_only" : "product")
+        )
+      );
+    } else {
+      stmts.push(
+        env.DB.prepare(
+          `INSERT INTO sale_items
+             (id, sale_id, product_id, product_name, qty, unit_price,
+              addons_json, addons_total, line_total, discount_amount, unit_cost)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).bind(...baseBinds)
+      );
+    }
+  });
+
+  if (promotionsStorageReady) appliedPromotions.forEach((promo) => {
     stmts.push(
       env.DB.prepare(
-        `INSERT INTO sale_items
-           (id, sale_id, product_id, product_name, qty, unit_price,
-            addons_json, addons_total, line_total, discount_amount, unit_cost)
+        `INSERT INTO sale_promotions
+           (id, sale_id, promotion_id, promotion_name, promotion_code, qty,
+            gross_amount, discount_amount, net_amount, metadata_json, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).bind(
-        lineId,
+        uid("sp"),
         saleId,
-        it.productId || null,
-        it.productName || it.name || "",
-        qty,
-        Number(it.unitPrice) || Number(it.price) || 0,
-        it.addonsJson || (it.addons ? JSON.stringify(it.addons) : null),
-        Number(it.addonsTotal) || 0,
-        // B2: server-recomputed line total
-        Number(it.__lineTotal) || (Number(it.unitPrice) || 0) * qty,
-        Number(it.__discountAmount) || 0,
-        it.unitCost || 0
+        promo.id,
+        promo.name,
+        promo.code || null,
+        promo.qty,
+        promo.grossAmount,
+        promo.discountAmount,
+        promo.netAmount,
+        JSON.stringify({ items: promo.items }),
+        ts
       )
+    );
+    stmts.push(
+      env.DB.prepare(
+        `UPDATE promotions
+         SET usage_count = COALESCE(usage_count, 0) + ?,
+             updated_at = ?
+         WHERE id = ?`
+      ).bind(promo.qty, ts, promo.id)
     );
   });
 

@@ -5,11 +5,27 @@ const PAID_REVENUE_FILTER = `
   AND (payment_status IS NULL OR payment_status = '' OR payment_status = 'paid')
   AND order_status IN ('completed', 'preparing', 'ready')
 `;
+const PAID_REVENUE_FILTER_S = `
+  AND (s.payment_status IS NULL OR s.payment_status = '' OR s.payment_status = 'paid')
+  AND s.order_status IN ('completed', 'preparing', 'ready')
+`;
 
 function shopDateKey(timestamp) {
   const date = new Date((Number(timestamp) || 0) + SHOP_TZ_OFFSET_MS);
   if (Number.isNaN(date.getTime())) return "";
   return date.toISOString().slice(0, 10);
+}
+
+async function hasPromotionReportColumns(db) {
+  try {
+    const itemInfo = await db.prepare("PRAGMA table_info(sale_items)").all();
+    const itemColumns = new Set((itemInfo.results || []).map((row) => row.name));
+    const promoInfo = await db.prepare("PRAGMA table_info(sale_promotions)").all();
+    const promoColumns = new Set((promoInfo.results || []).map((row) => row.name));
+    return itemColumns.has("report_scope") && promoColumns.has("net_amount");
+  } catch (_) {
+    return false;
+  }
 }
 
 // GET /api/reports/summary?from=&to=
@@ -19,6 +35,10 @@ export const onRequestGet = async ({ env, request }) => {
   const url = new URL(request.url);
   const from = Number(url.searchParams.get("from")) || 0;
   const to = Number(url.searchParams.get("to")) || Date.now();
+  const promotionReportsReady = await hasPromotionReportColumns(env.DB);
+  const productReportFilter = promotionReportsReady
+    ? "AND COALESCE(si.report_scope, 'product') <> 'promotion_only'"
+    : "";
 
   const totals = await env.DB.prepare(
     `SELECT COUNT(*) AS order_count,
@@ -56,9 +76,30 @@ export const onRequestGet = async ({ env, request }) => {
      WHERE s.created_at BETWEEN ? AND ?
        AND (s.payment_status IS NULL OR s.payment_status = '' OR s.payment_status = 'paid')
        AND s.order_status IN ('completed', 'preparing', 'ready')
+       ${productReportFilter}
      GROUP BY si.product_id, p.id, si.product_name, p.name, p.category_id, p.image, p.barcode, p.sku_code
      ORDER BY qty DESC`
   ).bind(from, to).all();
+
+  let promotionProducts = [];
+  if (promotionReportsReady) {
+    const promoRows = await env.DB.prepare(
+      `SELECT promotion_id,
+              promotion_name,
+              promotion_code,
+              SUM(qty) AS qty,
+              SUM(gross_amount) AS gross_amount,
+              SUM(discount_amount) AS discount_amount,
+              SUM(net_amount) AS net_amount
+       FROM sale_promotions sp
+       JOIN sales s ON s.id = sp.sale_id
+       WHERE s.created_at BETWEEN ? AND ?
+         ${PAID_REVENUE_FILTER_S}
+       GROUP BY promotion_id, promotion_name, promotion_code
+       ORDER BY qty DESC`
+    ).bind(from, to).all();
+    promotionProducts = promoRows.results || [];
+  }
 
   const { results: dayRows } = await env.DB.prepare(
     `SELECT created_at, total
@@ -117,6 +158,7 @@ export const onRequestGet = async ({ env, request }) => {
       cogs:        Number(profit.cogs)         || 0,
     },
     topProducts: topProducts || [],
+    promotionProducts,
     byDay,
     byPaymentMethod: byPaymentMethod || [],
   });
