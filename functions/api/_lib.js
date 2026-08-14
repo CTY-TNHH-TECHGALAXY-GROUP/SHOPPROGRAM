@@ -314,6 +314,13 @@ export async function ensureSalesStorageCompatibility(db) {
         : `ALTER TABLE sales ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0`
     ).run();
   }
+  if (!(await columnExists(db, "sales", "stock_status"))) {
+    await db.prepare(
+      db && db.__provider === "supabase"
+        ? `ALTER TABLE sales ADD COLUMN stock_status text NOT NULL DEFAULT 'pending'`
+        : `ALTER TABLE sales ADD COLUMN stock_status TEXT NOT NULL DEFAULT 'pending'`
+    ).run();
+  }
   if (!(await columnExists(db, "sale_items", "discount_amount"))) {
     await db.prepare(
       db && db.__provider === "supabase"
@@ -342,7 +349,14 @@ export async function ensureSalesStorageCompatibility(db) {
   ).run();
   await db.prepare(
     `ALTER TABLE sales ADD CONSTRAINT sales_order_status_check
-     CHECK (order_status IN ('completed','cancelled','held','new','preparing','ready','needs_action'))`
+     CHECK (order_status IN ('completed','cancelled','cancel_requested','held','new','preparing','ready','needs_action'))`
+  ).run();
+  await db.prepare(
+    `ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_stock_status_check`
+  ).run();
+  await db.prepare(
+    `ALTER TABLE sales ADD CONSTRAINT sales_stock_status_check
+     CHECK (stock_status IN ('pending','applied','restored'))`
   ).run();
 }
 

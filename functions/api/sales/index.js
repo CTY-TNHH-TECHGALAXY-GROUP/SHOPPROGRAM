@@ -1,7 +1,7 @@
 import {
   json, readJson, badRequest, now, uid, dateKey,
   isDuplicateOp, recordOpStmt, runIdempotentBatch, nextDocId,
-  inventoryDeltaStmt, movementStmt,
+  inventoryDeltaStmt, movementStmt, componentMovementStmt,
   ensureProductsInventoryModeColumn, ensureComponentsInventoryColumns,
   ensureSalesStorageCompatibility,
   normalizePaymentMethod, normalizeStockQty,
@@ -248,6 +248,13 @@ export const onRequestPost = async ({ env, request, data }) => {
       code: "KIOSK_ORDER_STATUS_ONLY",
     }, { status: 403 });
   }
+  if (data && data.user && data.user.role === "barista" && !["preparing", "ready"].includes(orderStatus)) {
+    return json({
+      ok: false,
+      error: "Barista can only update preparation state",
+      code: "BARISTA_ORDER_STATUS_ONLY",
+    }, { status: 403 });
+  }
 
   if (!body || !Array.isArray(body.items) || (!body.items.length && !isCancelled)) {
     return badRequest("items required");
@@ -325,6 +332,54 @@ export const onRequestPost = async ({ env, request, data }) => {
       return json({ ok: true, duplicate: true, id: dup, orderId: existing ? existing.order_id : orderIdFromSaleId(dup) });
     }
   }
+
+  const ts = now();
+  const requestedSaleId = String(body.id || "");
+  const requestedIdMatch = requestedSaleId.match(/^HD-(\d{8})-\d{3,}$/i);
+  let saleId = requestedIdMatch
+    ? requestedSaleId
+    : await nextDocId(env.DB, "HD", ts);
+  let canonicalOrderId = orderIdFromSaleId(saleId);
+  const bodyOrderId = String(body.orderId || body.order_id || "");
+
+  const existingOrder = await env.DB.prepare(
+    `SELECT id, order_id, order_status, payment_status, stock_status, total, paid
+     FROM sales
+     WHERE id = ? OR order_id = ? OR order_id = ?
+     ORDER BY
+       CASE
+         WHEN id = ? THEN 0
+         WHEN order_id = ? THEN 1
+         ELSE 2
+       END,
+       updated_at DESC,
+       created_at DESC
+     LIMIT 1`
+  ).bind(
+    saleId,
+    bodyOrderId,
+    canonicalOrderId || "",
+    saleId,
+    bodyOrderId
+  ).first();
+  const existingStatus = String(existingOrder && existingOrder.order_status || "").toLowerCase();
+  const existingStockStatus = String(existingOrder && existingOrder.stock_status || "pending").toLowerCase();
+  if (existingStatus === "completed" || existingStatus === "cancelled") {
+    return json({
+      ok: true,
+      id: existingOrder.id,
+      orderId: existingOrder.order_id || canonicalOrderId || bodyOrderId || null,
+      ignored: true,
+      orderStatus: existingOrder.order_status,
+      paymentStatus: existingOrder.payment_status,
+      stockStatus: existingOrder.stock_status || "applied",
+    });
+  }
+  if (existingOrder && !requestedIdMatch) {
+    saleId = existingOrder.id;
+    canonicalOrderId = existingOrder.order_id || orderIdFromSaleId(saleId) || canonicalOrderId;
+  }
+  const shouldApplyStock = ["completed", "preparing", "ready"].includes(orderStatus) && existingStockStatus !== "applied";
 
   // -------- B1: Server-side stock guard & BOM Expansion --------
   // Expand explicitly-marked recipe products into their components.
@@ -406,7 +461,7 @@ export const onRequestPost = async ({ env, request, data }) => {
     }
   }
 
-  if (isCompleted && !body.allowNegativeStock) {
+  if (shouldApplyStock && !body.allowNegativeStock) {
     const productStockMap = new Map();
     const requiredProductIds = [...requiredByProduct.keys()];
     if (requiredProductIds.length) {
@@ -574,45 +629,35 @@ export const onRequestPost = async ({ env, request, data }) => {
   } else {
     paymentMethod = body.paymentMethod ? normalizePaymentMethod(body.paymentMethod) : null;
     paidAmount = Number.isFinite(Number(body.paid)) ? Math.max(0, Math.round(Number(body.paid))) : 0;
-    paymentStatus = 'pending';
+    const expectsPaidBeforeDone = !isCancelled && (orderStatus === "preparing" || orderStatus === "ready");
+    if (expectsPaidBeforeDone) {
+      if (!paymentMethod) {
+        return badRequest("payment method required", {
+          code: "PAYMENT_METHOD_REQUIRED",
+          total: serverTotal,
+        });
+      }
+      if (serverTotal > 0 && paidAmount < serverTotal) {
+        return badRequest("paid amount is less than total", {
+          code: "PAYMENT_INSUFFICIENT",
+          total: serverTotal,
+          paid: paidAmount,
+          shortBy: serverTotal - paidAmount,
+          paymentMethod,
+        });
+      }
+      paymentStatus = 'paid';
+    } else {
+      paymentStatus = 'pending';
+    }
     orderStatusDb = isCancelled ? 'cancelled' : orderStatus;
   }
 
-  const ts = now();
-  const requestedSaleId = String(body.id || "");
-  const requestedIdMatch = requestedSaleId.match(/^HD-(\d{8})-\d{3,}$/i);
-  const saleId = requestedIdMatch
-    ? requestedSaleId
-    : await nextDocId(env.DB, "HD", ts);
-  const canonicalOrderId = orderIdFromSaleId(saleId);
-
-  if (!isCompleted) {
-    const existingTerminal = await env.DB.prepare(
-      `SELECT id, order_id, order_status, payment_status, total, paid
-       FROM sales
-       WHERE id = ? OR order_id = ?
-       ORDER BY
-         CASE WHEN id = ? THEN 0 ELSE 1 END,
-         updated_at DESC,
-         created_at DESC
-       LIMIT 1`
-    ).bind(
-      saleId,
-      canonicalOrderId || body.orderId || "",
-      saleId
-    ).first();
-    const existingStatus = String(existingTerminal && existingTerminal.order_status || "").toLowerCase();
-    if (existingStatus === "completed" || existingStatus === "cancelled") {
-      return json({
-        ok: true,
-        id: existingTerminal.id,
-        orderId: existingTerminal.order_id || canonicalOrderId || body.orderId || null,
-        ignored: true,
-        orderStatus: existingTerminal.order_status,
-        paymentStatus: existingTerminal.payment_status,
-      });
-    }
-  }
+  const shouldIncrementPromotionUsage = !(
+    existingOrder &&
+    paymentStatus === 'paid' &&
+    (existingStatus === "preparing" || existingStatus === "ready")
+  );
 
   // Snapshot costs for gross-profit reporting.
   const enriched = body.items.map((it) => {
@@ -627,14 +672,15 @@ export const onRequestPost = async ({ env, request, data }) => {
 
   const stmts = [];
   // Use SERVER-computed amounts so a tampered client can't change billing.
-  const changeAmount = isCompleted ? Math.max(0, paidAmount - serverTotal) : 0;
+  const changeAmount = paymentStatus === 'paid' ? Math.max(0, paidAmount - serverTotal) : 0;
+  const nextStockStatus = shouldApplyStock ? "applied" : (existingStockStatus || (isCancelled ? "restored" : "pending"));
   stmts.push(
     env.DB.prepare(
       `INSERT INTO sales
          (id, order_id, customer_name, subtotal, vat_amount, discount, total,
           paid, change_amount, payment_method, cashier_name,
-          payment_status, order_status, note, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          payment_status, order_status, stock_status, note, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          order_id = excluded.order_id,
          customer_name = excluded.customer_name,
@@ -648,6 +694,7 @@ export const onRequestPost = async ({ env, request, data }) => {
          cashier_name = excluded.cashier_name,
          payment_status = excluded.payment_status,
          order_status = excluded.order_status,
+         stock_status = excluded.stock_status,
          note = excluded.note,
          updated_at = excluded.updated_at`
     ).bind(
@@ -664,6 +711,7 @@ export const onRequestPost = async ({ env, request, data }) => {
       body.cashierName || null,
       paymentStatus,
       orderStatusDb,
+      nextStockStatus,
       body.note || null,
       ts,
       ts
@@ -747,18 +795,20 @@ export const onRequestPost = async ({ env, request, data }) => {
         ts
       )
     );
-    stmts.push(
-      env.DB.prepare(
-        `UPDATE promotions
-         SET usage_count = COALESCE(usage_count, 0) + ?,
-             updated_at = ?
-         WHERE id = ?`
-      ).bind(promo.qty, ts, promo.id)
-    );
+    if (shouldIncrementPromotionUsage) {
+      stmts.push(
+        env.DB.prepare(
+          `UPDATE promotions
+           SET usage_count = COALESCE(usage_count, 0) + ?,
+               updated_at = ?
+           WHERE id = ?`
+        ).bind(promo.qty, ts, promo.id)
+      );
+    }
   });
 
   // One stock movement + one inventory delta per distinct product.
-  if (isCompleted) {
+  if (shouldApplyStock) {
     for (const [productId, qty] of qtyByProduct.entries()) {
       if (!productId || !qty) continue;
       const info = productInfoMap.get(productId);
@@ -779,6 +829,18 @@ export const onRequestPost = async ({ env, request, data }) => {
     }
     for (const [componentId, qty] of qtyByComponent.entries()) {
       if (!componentId || !qty) continue;
+      stmts.push(
+        componentMovementStmt(env.DB, {
+          componentId,
+          movementType: "SALE",
+          qtyChange: -qty,
+          unitCost: null,
+          refType: "sale",
+          refId: saleId,
+          note: null,
+          createdAt: ts,
+        })
+      );
       stmts.push(
         env.DB.prepare(
           `UPDATE components

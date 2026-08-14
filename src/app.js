@@ -173,6 +173,7 @@
     { id: "new", label: "Mới / New" },
     { id: "preparing", label: "Đang chuẩn bị / Preparing" },
     { id: "ready", label: "Sẵn sàng / Ready" },
+    { id: "cancel_requested", label: "Chờ hủy / Cancel Review" },
     { id: "held", label: "Tạm giữ / Held" },
     { id: "needs_action", label: "Cần xử lí / Needs Action" },
     { id: "completed", label: "Hoàn thành / Completed" }
@@ -250,6 +251,11 @@
     }
 
     return "other";
+  }
+
+  function normalizeCheckoutPaymentMethod(value) {
+    var method = normalizePaymentMethod(value);
+    return method === "other" ? PAYMENT_METHOD_DEFAULT : method;
   }
 
   function getPaymentMethodOption(value) {
@@ -1658,7 +1664,7 @@
       syncRetryCount: Number(baseOrder.syncRetryCount || baseOrder.sync_retry_count) || 0,
       createdAt: baseOrder.createdAt || Date.now(),
       customerName: baseOrder.customerName || "Khách lẻ / Walk-in",
-      paymentMethod: normalizePaymentMethod(baseOrder.paymentMethod),
+      paymentMethod: normalizeCheckoutPaymentMethod(baseOrder.paymentMethod),
       cashReceived: Number(baseOrder.cashReceived) || 0,
       orderNumberSource: baseOrder.orderNumberSource || baseOrder.order_number_source || "local",
       reservedSaleId: baseOrder.reservedSaleId || baseOrder.reserved_sale_id || "",
@@ -1711,6 +1717,7 @@
       cashierName: baseSale.cashierName || baseSale.cashier_name || "",
       paymentStatus: isKnownPaymentFix ? "paid" : (baseSale.paymentStatus || baseSale.payment_status || "paid"),
       orderStatus: baseSale.orderStatus || baseSale.order_status || "completed",
+      stockStatus: baseSale.stockStatus || baseSale.stock_status || "",
       note: baseSale.note || "",
       items: Array.isArray(baseSale.items) ? baseSale.items : [],
       itemCount: Number(baseSale.itemCount || baseSale.item_count) || 0
@@ -1724,7 +1731,7 @@
     var paymentStatus = String((sale && (sale.paymentStatus || sale.payment_status)) || "paid").toLowerCase();
     var syncStatus = String((sale && (sale.syncStatus || sale.sync_status)) || "").toLowerCase();
     if (total <= 0) return false;
-    if (orderStatus && orderStatus !== "completed") return false;
+    if (orderStatus && ["completed", "preparing", "ready"].indexOf(orderStatus) === -1) return false;
     if (paymentStatus && paymentStatus !== "paid") return false;
     if (syncStatus !== "synced") return false;
     if (!isServerSaleRecord(sale)) return false;
@@ -3367,6 +3374,9 @@
     var [auditEndDate, setAuditEndDate] = useState("");
     var [auditLoading, setAuditLoading] = useState(false);
     var [auditError, setAuditError] = useState("");
+    var [cancelRequests, setCancelRequests] = useState([]);
+    var [cancelRequestsLoading, setCancelRequestsLoading] = useState(false);
+    var [cancelRequestsError, setCancelRequestsError] = useState("");
     var [inventorySection, setInventorySection] = useState("stock");
     var [selectedProductIds, setSelectedProductIds] = useState([]);
     var [labelPrintQuantities, setLabelPrintQuantities] = useState({});
@@ -3839,15 +3849,24 @@
       var cleanedNote = originalNote.replace(/^\[status:[a-zA-Z0-9_-]+\]\s*/, "");
       payload.note = "[status:" + payload.orderStatus + "]" + (cleanedNote ? " " + cleanedNote : "");
       
-      payload.paymentMethod = "other";
-      payload.paid = 0;
+      if (
+        (payload.orderStatus === "preparing" || payload.orderStatus === "ready") &&
+        normalizeCheckoutPaymentMethod(orderSnapshot.paymentMethod) &&
+        Number(orderSnapshot.cashReceived) >= Number(saleTotals.total)
+      ) {
+        payload.paymentMethod = normalizeCheckoutPaymentMethod(orderSnapshot.paymentMethod);
+        payload.paid = Number(orderSnapshot.cashReceived) || 0;
+      } else {
+        payload.paymentMethod = null;
+        payload.paid = 0;
+      }
       return payload;
     }
 
     function syncOpenOrder(order) {
       if (!order.reservedSaleId) return Promise.resolve(null);
       var workflowStatus = getOrderWorkflowStatus(order);
-      if (workflowStatus === "completed" || (order && order.status === "saving")) {
+      if (workflowStatus === "completed" || workflowStatus === "cancel_requested" || (order && order.status === "saving")) {
         return Promise.resolve(null);
       }
       var payload = buildOpenOrderSalePayload(order);
@@ -3989,12 +4008,14 @@
             else if (parsedStatus === "held") status = "held";
             else if (parsedStatus === "needs_action") status = "needs_action";
             else if (parsedStatus === "ready") status = "ready";
+            else if (parsedStatus === "cancel_requested") status = "cancel_requested";
           }
           if (!match) {
             if (row.order_status === "preparing") status = "preparing";
             else if (row.order_status === "held") status = "held";
             else if (row.order_status === "ready") status = "ready";
             else if (row.order_status === "needs_action") status = "needs_action";
+            else if (row.order_status === "cancel_requested") status = "cancel_requested";
             else status = "open";
           }
           var cleanedNote = note.replace(/^\[status:[a-zA-Z0-9_-]+\]\s*/, "");
@@ -4009,10 +4030,11 @@
             syncRetryCount: 0,
             createdAt: Number(row.created_at) || Date.now(),
             customerName: row.customer_name || "Khách lẻ / Walk-in",
-            paymentMethod: normalizePaymentMethod(row.payment_method) || "",
+            paymentMethod: normalizeCheckoutPaymentMethod(row.payment_method) || "",
             cashReceived: Number(row.paid) || 0,
             orderNumberSource: "server",
             reservedSaleId: row.id,
+            stockReserved: String(row.stock_status || "").toLowerCase() === "applied",
             note: cleanedNote,
             updatedAt: Number(row.updated_at || row.created_at) || Date.now()
           };
@@ -4240,7 +4262,11 @@
               byId[sale.id] = sale;
             });
             data.recentSales.filter(function (row) {
-              return !isKnownTechnicalTestSale(row) && row.order_status === "completed";
+              var pulledOrderStatus = String(row.order_status || row.orderStatus || "").toLowerCase();
+              var pulledPaymentStatus = String(row.payment_status || row.paymentStatus || "paid").toLowerCase();
+              return !isKnownTechnicalTestSale(row) &&
+                ["completed", "preparing", "ready"].indexOf(pulledOrderStatus) !== -1 &&
+                (!pulledPaymentStatus || pulledPaymentStatus === "paid");
             }).forEach(function (row) {
               var items = [];
               if (row.items_json) {
@@ -4278,11 +4304,12 @@
                 vatAmount: Number(row.vat_amount) || 0,
                 paid: Number(row.paid) || 0,
                 changeAmount: Number(row.change_amount) || 0,
-                paymentMethod: normalizePaymentMethod(row.payment_method),
+                paymentMethod: normalizeCheckoutPaymentMethod(row.payment_method),
                 customerName: row.customer_name || "Khách lẻ / Walk-in",
                 cashierName: row.cashier_name || "",
                 paymentStatus: row.payment_status || "paid",
                 orderStatus: row.order_status || "completed",
+                stockStatus: row.stock_status || "",
                 syncStatus: "synced",
                 serverId: row.id,
                 note: row.note || "",
@@ -4300,7 +4327,7 @@
           });
 
           // ----- Sync Open Orders across devices -----
-          var openSaleStatuses = new Set(["new", "held", "preparing", "ready", "needs_action"]);
+          var openSaleStatuses = new Set(["new", "held", "preparing", "ready", "needs_action", "cancel_requested"]);
           var openSales = data.recentSales.filter(function (row) { return openSaleStatuses.has(row.order_status); });
           var nonOpenSales = data.recentSales.filter(function (row) {
             return row.order_status === "completed" || row.order_status === "cancelled";
@@ -4581,11 +4608,55 @@
         });
     }
 
+    function loadCancelRequests() {
+      if (!currentUser || currentUser.role !== "admin") return Promise.resolve();
+      setCancelRequestsLoading(true);
+      setCancelRequestsError("");
+      return syncApi("/sales/cancel-requests?status=pending&limit=100")
+        .then(function (data) {
+          setCancelRequests(data.requests || []);
+          setCancelRequestsLoading(false);
+        })
+        .catch(function (err) {
+          setCancelRequestsLoading(false);
+          setCancelRequestsError(err && err.message ? err.message : String(err));
+        });
+    }
+
+    function reviewCancelRequest(requestId, decision) {
+      if (!requestId || !decision) return;
+      setCancelRequestsLoading(true);
+      setCancelRequestsError("");
+      syncApi("/sales/cancel-requests", {
+        method: "PATCH",
+        body: { requestId: requestId, decision: decision }
+      }).then(function () {
+        pushToast("success", decision === "approved"
+          ? L("Đã duyệt hủy và hoàn kho. / Cancellation approved and stock restored.")
+          : L("Đã từ chối yêu cầu hủy. / Cancellation request rejected."));
+        return Promise.all([
+          loadCancelRequests(),
+          window.ShopFlowSync && typeof window.ShopFlowSync.pull === "function"
+            ? window.ShopFlowSync.pull(0).catch(function () {})
+            : Promise.resolve()
+        ]);
+      }).catch(function (err) {
+        setCancelRequestsLoading(false);
+        setCancelRequestsError(err && err.message ? err.message : String(err));
+      });
+    }
+
     useEffect(function () {
       if (activeView === "settings" && settingsSection === "audit" && currentUser && currentUser.role === "admin") {
         loadAuditLogs();
       }
     }, [activeView, settingsSection, auditStartDate, auditEndDate, auditAccountFilter, auditEventFilter, currentUser]);
+
+    useEffect(function () {
+      if (activeView === "settings" && settingsSection === "cancellations" && currentUser && currentUser.role === "admin") {
+        loadCancelRequests();
+      }
+    }, [activeView, settingsSection, currentUser]);
 
     // Auto refresh when relevant views open.
     useEffect(function () {
@@ -6871,6 +6942,10 @@
       });
     }
 
+    function getPostPaymentOrderStatus(order) {
+      return orderHasRecipeItems(order) ? "preparing" : "completed";
+    }
+
     function getOrderWorkflowStatus(order) {
       var status = order && order.status ? order.status : "open";
       if (status === "saving") return "preparing";
@@ -6878,33 +6953,20 @@
       if (status === "held") return "held";
       if (status === "preparing") return "preparing";
       if (status === "ready") return "ready";
+      if (status === "cancel_requested") return "cancel_requested";
       if (status === "completed") return "completed";
       return "new";
     }
 
     function receiveActiveOrder() {
       if (!activeOrder || !activeOrder.items || !activeOrder.items.length) {
-        window.alert(L("Chọn đơn có món trước khi nhận đơn. / Pick an order with items before accepting it."));
+        window.alert(L("Chọn đơn có món trước khi thanh toán. / Pick an order with items before payment."));
         return;
       }
       if (activeOrder.status === "needs_action" || activeOrder.status === "saving") return;
 
-      var hasRecipeItems = orderHasRecipeItems(activeOrder);
-      updateActiveOrder(function (order) {
-        return Object.assign({}, order, {
-          status: hasRecipeItems ? "preparing" : "ready",
-          syncError: ""
-        });
-      });
-      if (!hasRecipeItems) {
-        setCheckoutPanelOpen(true);
-      }
-      pushToast(
-        "info",
-        hasRecipeItems
-          ? L("Đã nhận đơn pha chế. / Preparation started.")
-          : L("Đơn bán lẻ chuyển thẳng sang thanh toán. / Retail order moved to checkout.")
-      );
+      setCheckoutPanelOpen(true);
+      pushToast("info", L("Vui lòng hoàn tất thanh toán trước khi chuyển trạng thái đơn. / Complete payment before moving the order forward."));
     }
 
     function finishPreparingOrder() {
@@ -6981,6 +7043,47 @@
       });
     }
 
+    function submitSaleCancelRequest(saleId, onSuccess) {
+      var promptReason = window.prompt(L("Nhập lý do hủy đơn. Admin sẽ duyệt trước khi hoàn kho. / Enter cancellation reason. Admin approval is required before stock is restored."), "");
+      if (!promptReason || !promptReason.trim()) return;
+      syncApi("/sales/cancel-requests", {
+        method: "POST",
+        body: {
+          saleId: saleId,
+          reason: promptReason.trim(),
+          clientOpId: uid("cancel-op")
+        }
+      }).then(function () {
+        pushToast("success", L("Đã gửi yêu cầu hủy, chờ admin duyệt. / Cancellation request sent for admin review."));
+        if (typeof onSuccess === "function") onSuccess();
+        if (currentUser && currentUser.role === "admin") loadCancelRequests();
+      }).catch(function (err) {
+        var message = err && err.message ? err.message : String(err);
+        pushToast("error", L("Không gửi được yêu cầu hủy. / Could not send cancellation request.") + " " + message);
+      });
+    }
+
+    function requestCancelActiveOrder() {
+      if (!activeOrder || !activeOrder.reservedSaleId) {
+        cancelOrder();
+        return;
+      }
+      if (getOrderWorkflowStatus(activeOrder) === "cancel_requested") {
+        pushToast("info", L("Đơn đang chờ admin duyệt hủy. / This order is waiting for admin cancellation review."));
+        return;
+      }
+      submitSaleCancelRequest(activeOrder.reservedSaleId, function () {
+        updateActiveOrder(function (order) {
+          return Object.assign({}, order, {
+            status: "cancel_requested",
+            syncError: "",
+            updatedAt: Date.now()
+          });
+        });
+        setCheckoutPanelOpen(false);
+      });
+    }
+
     function getOrderPromotions(orderSnapshot) {
       var byPromotion = {};
       var groupItemsById = {};
@@ -7049,7 +7152,7 @@
         total: saleTotals.total,
         paid: Number(orderSnapshot.cashReceived) || 0,
         changeAmount: Math.max(0, (Number(orderSnapshot.cashReceived) || 0) - (Number(saleTotals.total) || 0)),
-        paymentMethod: normalizePaymentMethod(orderSnapshot.paymentMethod),
+        paymentMethod: normalizeCheckoutPaymentMethod(orderSnapshot.paymentMethod),
         cashierName: settings.cashierName || "",
         items: (orderSnapshot.items || []).map(function (item) {
           var addonTotal = getItemAddonTotal(item, addOns);
@@ -7098,7 +7201,7 @@
       });
     }
 
-    function payNow() {
+    function payNow(targetOrderStatus) {
       if (checkoutSaving) {
         return;
       }
@@ -7106,7 +7209,7 @@
         window.alert(L("Đơn hiện tại chưa có món. / This order is empty."));
         return;
       }
-      if (!normalizePaymentMethod(activeOrder.paymentMethod)) {
+      if (!normalizeCheckoutPaymentMethod(activeOrder.paymentMethod)) {
         window.alert(L("Vui lòng chọn phương thức thanh toán trước khi hoàn tất bán hàng. / Please select a payment method before completing the sale."));
         setPaymentMenuOpen(true);
         return;
@@ -7130,6 +7233,13 @@
         return;
       }
 
+      var requestedTargetStatus = targetOrderStatus || getPostPaymentOrderStatus(activeOrder);
+      var targetStatus = ["completed", "preparing", "ready"].indexOf(requestedTargetStatus) !== -1
+        ? requestedTargetStatus
+        : getPostPaymentOrderStatus(activeOrder);
+      var isCompletingOrder = targetStatus === "completed";
+      var stockAlreadyReserved = !!activeOrder.stockReserved;
+      var shouldReserveStockNow = !stockAlreadyReserved && ["completed", "preparing", "ready"].indexOf(targetStatus) !== -1;
       var stockRequirements = getOrderStockRequirements(activeOrder.items);
       var requiredQtyByProduct = stockRequirements.products;
       var requiredQtyByComponent = stockRequirements.components;
@@ -7190,17 +7300,21 @@
       var insufficientItems = insufficientProducts.concat(insufficientComponents);
 
       if (insufficientItems.length) {
-        // Local stock can be stale when another device just verified stock-in.
-        // Do not block held orders here; the server/Supabase stock guard below
-        // is the source of truth and will reject only if inventory is truly short.
-        if (window && window.console) {
-          window.console.warn("Local stock looked short; server will verify before saving sale.", insufficientItems);
+        if (shouldReserveStockNow) {
+          // Local stock can be stale when another device just verified stock-in.
+          // Do not block here; the server/Supabase stock guard below is the
+          // source of truth and will reject only if inventory is truly short.
+          if (window && window.console) {
+            window.console.warn("Local stock looked short; server will verify before saving sale.", insufficientItems);
+          }
         }
       }
 
       var orderSnapshot = clone(activeOrder);
       var saleClientOpId = uid("sale-op");
       var salePayload = buildSalePayload(orderSnapshot, totals, saleClientOpId);
+      salePayload.orderStatus = targetStatus;
+      salePayload.note = "[status:" + targetStatus + "]" + (orderSnapshot.note ? " " + orderSnapshot.note : "");
 
       setCheckoutSaving(true);
       setOrders(function (currentOrders) {
@@ -7231,11 +7345,12 @@
           vat: Number(response.serverVat) || totals.vat,
           discount: totals.discount,
           customerName: orderSnapshot.customerName || "",
-          paymentMethod: normalizePaymentMethod(orderSnapshot.paymentMethod),
+          paymentMethod: normalizeCheckoutPaymentMethod(orderSnapshot.paymentMethod),
           cashReceived: Number(orderSnapshot.cashReceived) || 0,
           cashierName: settings.cashierName || "",
           paymentStatus: "paid",
-          orderStatus: "completed",
+          orderStatus: targetStatus,
+          stockStatus: shouldReserveStockNow || stockAlreadyReserved ? "applied" : "",
           note: ""
         };
 
@@ -7245,62 +7360,103 @@
           }));
         });
 
-        // Only decrement local stock after the server confirms the sale.
-        var newlyLow = [];
-        setProducts(function (currentProducts) {
-          return currentProducts.map(function (product) {
-            var soldQty = Number(requiredQtyByProduct[product.id]) || 0;
-            if (!soldQty) return product;
-            var oldQty = Number(product.stock) || 0;
-            var newQty = Math.max(0, oldQty - soldQty);
-            var min = Number(product.minStock) || 0;
-            if (min > 0 && oldQty > min && newQty <= min) {
-              newlyLow.push({ name: product.name, newQty: newQty, min: min });
-            }
-            return Object.assign({}, product, { stock: newQty });
+        if (shouldReserveStockNow) {
+          // Reserve stock right after the server confirms payment. Preparing
+          // orders keep stockReserved=true, so later state updates do not
+          // decrement stock a second time.
+          var newlyLow = [];
+          setProducts(function (currentProducts) {
+            return currentProducts.map(function (product) {
+              var soldQty = Number(requiredQtyByProduct[product.id]) || 0;
+              if (!soldQty) return product;
+              var oldQty = Number(product.stock) || 0;
+              var newQty = Math.max(0, oldQty - soldQty);
+              var min = Number(product.minStock) || 0;
+              if (min > 0 && oldQty > min && newQty <= min) {
+                newlyLow.push({ name: product.name, newQty: newQty, min: min });
+              }
+              return Object.assign({}, product, { stock: newQty });
+            });
           });
-        });
-        setComponents(function (currentComponents) {
-          return currentComponents.map(function (component) {
-            if (component.isUnlimitedStock) return component;
-            var usedQty = Number(requiredQtyByComponent[component.id]) || 0;
-            if (!usedQty) return component;
-            var oldQty = Number(component.stockQty) || 0;
-            var newQty = Math.max(0, oldQty - usedQty);
-            var min = Number(component.minStock) || 0;
-            if (min > 0 && oldQty > min && newQty <= min) {
-              newlyLow.push({ name: L(component.label), newQty: newQty, min: min });
-            }
-            return Object.assign({}, component, { stockQty: newQty });
+          setComponents(function (currentComponents) {
+            return currentComponents.map(function (component) {
+              if (component.isUnlimitedStock) return component;
+              var usedQty = Number(requiredQtyByComponent[component.id]) || 0;
+              if (!usedQty) return component;
+              var oldQty = Number(component.stockQty) || 0;
+              var newQty = Math.max(0, oldQty - usedQty);
+              var min = Number(component.minStock) || 0;
+              if (min > 0 && oldQty > min && newQty <= min) {
+                newlyLow.push({ name: L(component.label), newQty: newQty, min: min });
+              }
+              return Object.assign({}, component, { stockQty: newQty });
+            });
           });
-        });
 
-        if (newlyLow.length) {
-          window.setTimeout(function () {
-            window.alert(
-              L("⚠ Cảnh báo tồn kho thấp / Low stock alert") + ":\n\n" +
-              newlyLow.map(function (p) {
-                return "• " + p.name + " — " + L("còn") + " " + p.newQty + " / " + L("min") + " " + p.min;
-              }).join("\n") +
-              "\n\n" + L("Vui lòng tạo phiếu nhập hàng sớm. / Please create a Purchase Order soon.")
-            );
-          }, 200);
+          if (newlyLow.length) {
+            window.setTimeout(function () {
+              window.alert(
+                L("⚠ Cảnh báo tồn kho thấp / Low stock alert") + ":\n\n" +
+                newlyLow.map(function (p) {
+                  return "• " + p.name + " — " + L("còn") + " " + p.newQty + " / " + L("min") + " " + p.min;
+                }).join("\n") +
+                "\n\n" + L("Vui lòng tạo phiếu nhập hàng sớm. / Please create a Purchase Order soon.")
+              );
+            }, 200);
+          }
+
+          setOrders(function (currentOrders) {
+            var remaining = currentOrders.filter(function (order) {
+              return order.id !== orderSnapshot.id;
+            });
+            if (!remaining.length) {
+              var createdNextOrderState = createOrder(orderSequenceByDate);
+              setOrderSequenceByDate(createdNextOrderState.nextSequenceByDate);
+              return [createdNextOrderState.order];
+            }
+            return remaining;
+          });
+          setCheckoutPanelOpen(false);
+          setPosOrderPicked(false);
+          pushToast("success", L("Đã hoàn thành đơn. / Order completed."));
+          return;
         }
 
         setOrders(function (currentOrders) {
-          var remaining = currentOrders.filter(function (order) {
-            return order.id !== orderSnapshot.id;
+          var hasEmptyDraft = currentOrders.some(function (order) {
+            return order.id !== orderSnapshot.id &&
+              (!order.items || !order.items.length) &&
+              getOrderWorkflowStatus(order) === "new";
           });
-          if (!remaining.length) {
-            var createdNextOrderState = createOrder(orderSequenceByDate);
-            setOrderSequenceByDate(createdNextOrderState.nextSequenceByDate);
-            return [createdNextOrderState.order];
+          var nextOrders = currentOrders.map(function (order) {
+            return order.id === orderSnapshot.id
+              ? Object.assign({}, order, {
+                  reservedSaleId: serverId,
+                  orderNumberSource: "server",
+                  status: targetStatus,
+                  stockReserved: true,
+                  paymentMethod: normalizeCheckoutPaymentMethod(orderSnapshot.paymentMethod),
+                  cashReceived: Number(orderSnapshot.cashReceived) || 0,
+                  syncError: "",
+                  syncRetryCount: 0,
+                  updatedAt: Date.now()
+                })
+              : order;
+          });
+          if (!hasEmptyDraft) {
+            var nextOrderState = createOrder(orderSequenceByDate);
+            setOrderSequenceByDate(nextOrderState.nextSequenceByDate);
+            nextOrders = nextOrders.concat(nextOrderState.order);
+            setActiveOrderId(nextOrderState.order.id);
+            setPosOrderPicked(false);
           }
-          return remaining;
+          return nextOrders;
         });
         setCheckoutPanelOpen(false);
-        setPosOrderPicked(false);
-        pushToast("success", L("Đã lưu hóa đơn / Sale saved"));
+        setPaymentMenuOpen(false);
+        pushToast("success", targetStatus === "preparing"
+          ? L("Đã thanh toán, chuyển đơn sang pha chế. / Paid and sent to preparation.")
+          : L("Đã thanh toán, đơn đã sẵn sàng. / Paid and order is ready."));
       }).catch(function (error) {
         if (error && error.status === 401) {
           handleSessionExpired(L("Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại để lưu hóa đơn. / Session expired. Please log in again to save the sale."));
@@ -7625,6 +7781,13 @@
       var sale = completedSaleDetail.sale || {};
       var items = completedSaleDetail.items || [];
       var returningToHistory = orderHistoryModalOpen;
+      var completedSaleId = sale.serverId || sale.server_id || sale.id || "";
+      var completedSaleStatus = String(sale.orderStatus || sale.order_status || "completed").toLowerCase();
+      var canRequestCompletedSaleCancel = currentUser &&
+        ["admin", "cashier"].indexOf(currentUser.role) !== -1 &&
+        /^HD-/i.test(String(completedSaleId)) &&
+        completedSaleStatus !== "cancelled" &&
+        completedSaleStatus !== "cancel_requested";
       return html`
         <div className="detail-modal-backdrop" role="presentation" onClick=${function () { setCompletedSaleDetail(null); }}>
           <section className="detail-modal surface completed-sale-modal" role="dialog" aria-modal="true" onClick=${function (event) { event.stopPropagation(); }}>
@@ -7636,6 +7799,23 @@
               </div>
               <div className="row-actions">
                 <button className="ghost-btn" onClick=${function () { reprintSale(sale, false); }}>${L("Xem hóa đơn / Preview Receipt")}</button>
+                ${canRequestCompletedSaleCancel ? html`
+                  <button className="ghost-btn danger-outline-btn" onClick=${function () {
+                    submitSaleCancelRequest(completedSaleId, function () {
+                      setSales(function (currentSales) {
+                        return currentSales.map(function (currentSale) {
+                          var normalized = normalizeSaleRecord(currentSale);
+                          if (normalized.id !== completedSaleId && normalized.serverId !== completedSaleId) return currentSale;
+                          return normalizeSaleRecord(Object.assign({}, normalized, { orderStatus: "cancel_requested" }));
+                        });
+                      });
+                      setCompletedSaleDetail(null);
+                      if (window.ShopFlowSync && typeof window.ShopFlowSync.pull === "function") {
+                        window.ShopFlowSync.pull(0).catch(function () {});
+                      }
+                    });
+                  }}>${L("Báo cáo hủy / Request Cancel")}</button>
+                ` : null}
                 <button className="ghost-btn" onClick=${function () { setCompletedSaleDetail(null); }}>
                   ${returningToHistory ? L("Quay lại lịch sử / Back to History") : L("Đóng / Close")}
                 </button>
@@ -11360,7 +11540,7 @@
                   ${L("Hoàn tất món / Mark Ready")}
                 </button>
               ` : html`
-                <span className="barista-ready-note">${L("Chờ cashier thanh toán / Waiting for cashier checkout")}</span>
+                <span className="barista-ready-note">${L("Chờ cashier hoàn thành / Waiting for cashier completion")}</span>
               `}
             </div>
           </article>
@@ -11396,27 +11576,32 @@
 
     function renderPosView() {
       var changeDue = Math.max(0, (Number(activeOrder.cashReceived) || 0) - totals.total);
-      var quickCashOptions = [50000, 100000, 200000, 500000];
+      var exactCashOption = Math.max(0, Math.round(Number(totals.total) || 0));
+      var quickCashOptions = [exactCashOption, 50000, 100000, 200000, 500000].filter(function (amount, index, list) {
+        return amount > 0 && list.indexOf(amount) === index;
+      });
       var orderNeedsAction = activeOrder.status === "needs_action";
       var orderSaving = activeOrder.status === "saving" || checkoutSaving;
       var activeOrderPicked = posOrderPicked && orders.some(function (order) { return order.id === activeOrderId; });
-      var checkoutDisabled = orderSaving || !activeOrderPicked;
+      var checkoutDisabled = orderSaving || !activeOrderPicked || getOrderWorkflowStatus(activeOrder) === "cancel_requested";
       var activeOrderHasRecipeItems = orderHasRecipeItems(activeOrder);
       var activeWorkflowStatus = getOrderWorkflowStatus(activeOrder);
-      var recipeAwaitingAccept = activeOrderHasRecipeItems
-        && activeWorkflowStatus !== "preparing"
-        && activeWorkflowStatus !== "ready"
-        && activeWorkflowStatus !== "needs_action"
-        && activeWorkflowStatus !== "completed";
+      var activeCheckoutPaymentMethod = normalizeCheckoutPaymentMethod(activeOrder.paymentMethod);
       var recipePreparing = activeOrderHasRecipeItems && activeWorkflowStatus === "preparing";
+      var orderReadyToComplete = activeWorkflowStatus === "ready";
+      var orderCancelRequested = activeWorkflowStatus === "cancel_requested";
       function handleCheckoutPrimaryAction() {
-        if (orderNeedsAction) {
-          payNow();
+        if (orderCancelRequested) {
+          pushToast("info", L("Đơn đang chờ admin duyệt hủy. / This order is waiting for admin cancellation review."));
           return;
         }
-        if (recipeAwaitingAccept) {
-          receiveActiveOrder();
-          setCheckoutPanelOpen(false);
+        if (orderNeedsAction) {
+          if (!checkoutPanelOpen) {
+            setCheckoutPanelOpen(true);
+            setPaymentMenuOpen(false);
+            return;
+          }
+          payNow(getPostPaymentOrderStatus(activeOrder));
           return;
         }
         if (recipePreparing) {
@@ -11424,30 +11609,35 @@
           setCheckoutPanelOpen(false);
           return;
         }
-        if (!activeOrderHasRecipeItems) {
-          payNow();
+        if (orderReadyToComplete) {
+          payNow("completed");
           return;
         }
         if (checkoutPanelOpen) {
-          payNow();
+          payNow(getPostPaymentOrderStatus(activeOrder));
           return;
         }
         setCheckoutPanelOpen(true);
       }
       function getCheckoutPrimaryLabel() {
         if (orderSaving) return L("Đang lưu... / Saving...");
-        if (orderNeedsAction) return L("Thử lại / Retry");
-        if (recipeAwaitingAccept) return L("Xác nhận đơn / Accept Order");
+        if (orderCancelRequested) return L("Chờ duyệt hủy / Cancel Pending");
+        if (orderNeedsAction) return checkoutPanelOpen
+          ? L("Thử lại thanh toán / Retry Payment")
+          : L("Thử lại / Retry");
         if (recipePreparing) return L("Hoàn tất chuẩn bị / Mark Ready");
-        if (checkoutPanelOpen) return L("Xác nhận thanh toán / Confirm Payment");
-        return L("Thanh toán / Checkout") + " (" + formatCurrency(totals.total) + ")";
+        if (orderReadyToComplete) return L("Hoàn thành / Complete");
+        if (checkoutPanelOpen) return L("Hoàn tất thanh toán / Complete Payment");
+        return L("Tiếp tục / Continue");
       }
       var startOfToday = new Date();
       startOfToday = new Date(startOfToday.getFullYear(), startOfToday.getMonth(), startOfToday.getDate()).getTime();
       var endOfToday = startOfToday + 24 * 60 * 60 * 1000 - 1;
       var completedSalesToday = dedupeSalesByOrderId((sales || []).map(normalizeSaleRecord).filter(function (sale) {
         var createdAt = Number(sale.createdAt) || 0;
+        var saleOrderStatus = String((sale && (sale.orderStatus || sale.order_status)) || "completed").toLowerCase();
         return !isKnownTechnicalTestSale(sale) &&
+          saleOrderStatus === "completed" &&
           isSaleRevenueEligible(sale) &&
           createdAt >= startOfToday &&
           createdAt <= endOfToday;
@@ -11485,12 +11675,13 @@
         counts[status] = (counts[status] || 0) + 1;
         counts.all += 1;
         return counts;
-      }, { all: completedSalesToday.length, new: 0, preparing: 0, ready: 0, held: 0, needs_action: 0, completed: completedSalesToday.length });
+      }, { all: completedSalesToday.length, new: 0, preparing: 0, ready: 0, cancel_requested: 0, held: 0, needs_action: 0, completed: completedSalesToday.length });
       function getOpenOrderStatusLabel(order) {
         if (order.status === "needs_action") return L("Cần xử lí / Needs Action");
         if (order.status === "saving") return L("Đang lưu / Saving");
         if (order.status === "preparing") return L("Đang chuẩn bị / Preparing");
         if (order.status === "ready") return L("Sẵn sàng / Ready");
+        if (order.status === "cancel_requested") return L("Chờ duyệt hủy / Cancel Review");
         if (order.status === "completed") return L("Hoàn thành / Completed");
         if (order.status === "held") return L("Tạm giữ / Held");
         return L("Mới / New");
@@ -11501,8 +11692,9 @@
       function getOrderCardActionLabel(order) {
         if (order.id === activeOrder.id && activeOrderPicked) return L("Đang chọn / Selected");
         var status = getOrderWorkflowStatus(order);
+        if (status === "cancel_requested") return L("Chờ admin / Admin Review");
         if (status === "held" || status === "preparing") return L("Tiếp tục / Continue");
-        if (status === "ready") return L("Thanh toán / Checkout");
+        if (status === "ready") return L("Hoàn thành / Complete");
         return L("Chọn đơn / Select Order");
       }
       function getCompletedSaleItemCount(sale) {
@@ -11829,7 +12021,7 @@
           <aside className=${"order-panel surface" + (checkoutPanelOpen ? " pos-payment-panel" : "")}>
             ${checkoutPanelOpen ? html`
               <div className="pos-payment-title">
-                <strong>${L("Thanh toán đơn hàng / Checkout")}</strong>
+                <strong>${L("Hoàn tất thanh toán / Complete Payment")}</strong>
                 <button
                   type="button"
                   className="pos-payment-close"
@@ -11856,14 +12048,24 @@
                       ${L("Đang lưu vào Supabase... / Saving to Supabase...")}
                     </div>
                   ` : null}
-                  ${activeWorkflowStatus === "preparing" && !orderSaving ? html`
-                    <div className="status-pill status-warning" style=${{ marginTop: 8 }}>
-                      ${L("Đang chuẩn bị / Preparing")}
-                    </div>
-                  ` : null}
-                  ${activeWorkflowStatus === "completed" && !orderSaving ? html`
-                    <div className="status-pill status-success" style=${{ marginTop: 8 }}>
-                      ${L("Hoàn thành / Completed")}
+                ${activeWorkflowStatus === "preparing" && !orderSaving ? html`
+                  <div className="status-pill status-warning" style=${{ marginTop: 8 }}>
+                    ${L("Đang chuẩn bị / Preparing")}
+                  </div>
+                ` : null}
+                ${activeWorkflowStatus === "ready" && !orderSaving ? html`
+                  <div className="status-pill status-success" style=${{ marginTop: 8 }}>
+                    ${L("Sẵn sàng / Ready")}
+                  </div>
+                ` : null}
+                ${activeWorkflowStatus === "cancel_requested" && !orderSaving ? html`
+                  <div className="status-pill status-warning" style=${{ marginTop: 8 }}>
+                    ${L("Chờ admin duyệt hủy / Waiting for cancellation approval")}
+                  </div>
+                ` : null}
+                ${activeWorkflowStatus === "completed" && !orderSaving ? html`
+                  <div className="status-pill status-success" style=${{ marginTop: 8 }}>
+                    ${L("Hoàn thành / Completed")}
                     </div>
                   ` : null}
                   ${!activeOrderPicked ? html`
@@ -11876,14 +12078,22 @@
               </div>
               ${(activeOrder.items && activeOrder.items.length > 0)
                 ? (activeOrderPicked ? html`
-                    ${activeOrder.status === "preparing" ? html`
+                    ${activeWorkflowStatus === "cancel_requested" ? html`
+                      <button className="ghost-btn" disabled>${L("Chờ admin duyệt hủy / Waiting for admin review")}</button>
+                    ` : activeOrder.status === "preparing" ? html`
                       <button className="primary-btn" onClick=${finishPreparingOrder}>${L("Hoàn tất chuẩn bị / Mark Ready")}</button>
-                    ` : (activeOrder.status !== "needs_action" && activeOrder.status !== "saving" && activeOrder.status !== "ready" ? html`
+                    ` : (activeOrder.status !== "needs_action" && activeOrder.status !== "saving" && activeOrder.status !== "completed" ? html`
                       <button className="primary-btn" disabled=${checkoutDisabled} onClick=${handleCheckoutPrimaryAction}>
                         ${getCheckoutPrimaryLabel()}
                       </button>
                     ` : null)}
-                    <button className="ghost-btn" onClick=${cancelOrder}>${L("Xóa món / Clear Items")}</button>
+                    ${activeOrder.reservedSaleId && activeWorkflowStatus !== "cancel_requested" ? html`
+                      <button className="ghost-btn danger-outline-btn" onClick=${requestCancelActiveOrder}>
+                        ${L("Báo cáo hủy / Request Cancel")}
+                      </button>
+                    ` : (!activeOrder.reservedSaleId && activeWorkflowStatus !== "cancel_requested" ? html`
+                      <button className="ghost-btn" onClick=${cancelOrder}>${L("Xóa món / Clear Items")}</button>
+                    ` : null)}
                   ` : null)
                 : (orders.length > 1
                     ? html`<button className="ghost-btn" onClick=${cancelOrder}>${L("Xóa đơn / Remove Order")}</button>`
@@ -12095,7 +12305,7 @@
               </div>
             ` : null}
 
-            <div className="payment-grid">
+            <div className="payment-grid payment-grid-single customer-grid">
               <label className="field">
                 <span>${L("Tên khách hàng / Customer Name")}</span>
                 <input
@@ -12107,7 +12317,55 @@
                   }}
                 />
               </label>
+            </div>
 
+            ${checkoutPanelOpen ? html`
+            <div className="payment-drawer-card">
+              <div className="payment-drawer-hero">
+                <div>
+                  <p className="eyebrow">${L("Thanh toán / Payment")}</p>
+                  <h3>${formatCurrency(totals.total)}</h3>
+                </div>
+                <button
+                  type="button"
+                  className="cash-chip cash-chip-recommended"
+                  onClick=${function () {
+                    updateActiveOrder(function (order) {
+                      return Object.assign({}, order, {
+                        paymentMethod: normalizeCheckoutPaymentMethod(order.paymentMethod) || "cash",
+                        cashReceived: exactCashOption
+                      });
+                    });
+                    setPaymentMenuOpen(false);
+                  }}
+                >
+                  ${L("Khách trả đúng / Exact")} ${formatCurrency(exactCashOption)}
+                </button>
+              </div>
+
+              <div className="payment-method-grid">
+                ${PAYMENT_METHOD_OPTIONS.map(function (option) {
+                  var isActive = activeCheckoutPaymentMethod === option.value;
+                  return html`
+                    <button
+                      key=${option.value}
+                      type="button"
+                      className=${"payment-method-tile" + (isActive ? " is-active" : "")}
+                      onClick=${function () {
+                        updateActiveOrder(function (order) {
+                          return Object.assign({}, order, { paymentMethod: option.value });
+                        });
+                        setPaymentMenuOpen(false);
+                      }}
+                    >
+                      <span>${L(option.label)}</span>
+                      <strong>${isActive ? "✓" : ""}</strong>
+                    </button>
+                  `;
+                })}
+              </div>
+
+              <div className="payment-grid payment-grid-single">
               <label className="field">
                 <span>${L("Phương thức thanh toán / Payment Method")}</span>
                 <div
@@ -12118,20 +12376,20 @@
                 >
                   <button
                     type="button"
-                    className=${"payment-select-trigger" + (!normalizePaymentMethod(activeOrder.paymentMethod) ? " is-placeholder" : "")}
+                    className=${"payment-select-trigger" + (!activeCheckoutPaymentMethod ? " is-placeholder" : "")}
                     onClick=${function (event) {
                       event.stopPropagation();
                       setPaymentMenuOpen(!paymentMenuOpen);
                     }}
                   >
-                    <span>${L(getPaymentMethodLabel(activeOrder.paymentMethod))}</span>
+                    <span>${L(activeCheckoutPaymentMethod ? getPaymentMethodLabel(activeCheckoutPaymentMethod) : PAYMENT_METHOD_PLACEHOLDER)}</span>
                     <span className="payment-select-icon">▾</span>
                   </button>
 
                   ${paymentMenuOpen ? html`
                     <div className="payment-select-dropdown">
                       ${PAYMENT_METHOD_OPTIONS.map(function (option) {
-                        var isActive = normalizePaymentMethod(activeOrder.paymentMethod) === option.value;
+                        var isActive = activeCheckoutPaymentMethod === option.value;
                         return html`
                           <button
                             key=${option.value}
@@ -12154,9 +12412,7 @@
                   ` : null}
                 </div>
               </label>
-            </div>
 
-            <div className="payment-grid payment-grid-single">
               <label className="field">
                 <span>${L("Tiền khách đưa / Cash Received")}</span>
                 <${LocalNumberInput}
@@ -12168,6 +12424,8 @@
                   }}
                 />
               </label>
+              </div>
+
               <label className="field discount-box">
                 <span>${L("Giảm toàn đơn / Order Discount")}</span>
                 <${LocalNumberInput}
@@ -12180,14 +12438,13 @@
                   }}
                 />
               </label>
-            </div>
 
-            <div className="quick-cash-row">
+              <div className="quick-cash-row">
               ${quickCashOptions.map(function (amount) {
                 return html`
                   <button
                     key=${amount}
-                    className="cash-chip"
+                    className=${"cash-chip" + (amount === exactCashOption ? " is-exact" : "")}
                     onClick=${function () {
                       updateActiveOrder(function (order) {
                         return Object.assign({}, order, { cashReceived: amount });
@@ -12198,7 +12455,9 @@
                   </button>
                 `;
               })}
+              </div>
             </div>
+            ` : null}
 
             <!-- Prices are VAT-inclusive, so we don't show a separate "Thuế"
                  row anymore. The displayed amount IS what the customer pays. -->
@@ -15391,6 +15650,7 @@
         { id: "invoice", label: "Hóa đơn / Invoice" }
       ];
       if (currentUser && currentUser.role === "admin") {
+        settingsTabs.push({ id: "cancellations", label: "Duyệt hủy / Cancellations" });
         settingsTabs.push({ id: "audit", label: "Audit / Audit" });
       }
       var auditEventLabels = {
@@ -15624,6 +15884,69 @@
                         `}
                       </tbody>
                     </table>
+                  </div>
+                </section>
+              </div>
+            ` : null}
+
+            ${settingsSection === "cancellations" && currentUser && currentUser.role === "admin" ? html`
+              <div className="stack-view settings-pane">
+                <section className="surface section-card">
+                  <div className="section-top">
+                    <div>
+                      <p className="eyebrow">${L("Duyệt hủy đơn / Cancellation Review")}</p>
+                      <h2 className="section-title">${L("Yêu cầu hủy chờ admin / Pending Cancel Requests")}</h2>
+                    </div>
+                    <button type="button" className="ghost-btn" onClick=${loadCancelRequests} disabled=${cancelRequestsLoading}>
+                      ${cancelRequestsLoading ? L("Đang tải... / Loading...") : L("Tải lại / Refresh")}
+                    </button>
+                  </div>
+
+                  <div className="empty-state align-left">
+                    ${L("Cashier chỉ gửi yêu cầu hủy. Admin duyệt thì đơn chuyển sang hủy và hệ thống hoàn lại tồn kho đã giữ lúc thanh toán. / Cashiers can only request cancellation. Approval cancels the sale and restores stock reserved at payment.")}
+                  </div>
+
+                  ${cancelRequestsError ? html`<div className="empty-state align-left danger-text">${cancelRequestsError}</div>` : null}
+
+                  <div className="list-stack">
+                    ${cancelRequests.length ? cancelRequests.map(function (requestRow) {
+                      var requestedAt = Number(requestRow.requested_at || requestRow.requestedAt) || 0;
+                      return html`
+                        <article key=${requestRow.id} className="list-row list-row-actions">
+                          <div>
+                            <strong>${requestRow.order_id || requestRow.orderId || requestRow.sale_id}</strong>
+                            <small>
+                              ${formatCurrency(Number(requestRow.total) || 0)}
+                              · ${requestRow.requested_by || "-"}
+                              · ${requestedAt ? formatDateTime(requestedAt) : "-"}
+                            </small>
+                            <small>${requestRow.reason || "-"}</small>
+                          </div>
+                          <div className="row-actions">
+                            <button
+                              type="button"
+                              className="ghost-btn"
+                              disabled=${cancelRequestsLoading}
+                              onClick=${function () { reviewCancelRequest(requestRow.id, "rejected"); }}
+                            >
+                              ${L("Từ chối / Reject")}
+                            </button>
+                            <button
+                              type="button"
+                              className="primary-btn"
+                              disabled=${cancelRequestsLoading}
+                              onClick=${function () { reviewCancelRequest(requestRow.id, "approved"); }}
+                            >
+                              ${L("Duyệt hủy / Approve")}
+                            </button>
+                          </div>
+                        </article>
+                      `;
+                    }) : html`
+                      <div className="empty-state align-left">
+                        ${cancelRequestsLoading ? L("Đang tải yêu cầu hủy... / Loading cancel requests...") : L("Không có yêu cầu hủy đang chờ. / No pending cancellation requests.")}
+                      </div>
+                    `}
                   </div>
                 </section>
               </div>

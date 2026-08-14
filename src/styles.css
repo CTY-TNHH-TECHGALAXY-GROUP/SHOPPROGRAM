@@ -987,6 +987,11 @@ textarea:focus {
   color: var(--danger);
 }
 
+.danger-outline-btn {
+  border-color: rgba(192, 57, 43, 0.28);
+  color: var(--danger);
+}
+
 .order-switcher {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -1126,6 +1131,11 @@ textarea:focus {
 .order-chip-status-needs_action {
   border-color: #ee8c80;
   background: linear-gradient(135deg, #fff0f0 0%, #ffd8d3 100%);
+}
+
+.order-chip-status-cancel_requested {
+  border-color: #d89a5b;
+  background: linear-gradient(135deg, #fff5e9 0%, #ffe3c7 100%);
 }
 
 .order-chip-status-ready {
@@ -1293,6 +1303,17 @@ textarea:focus {
   border-color: #dc675b;
   background: linear-gradient(135deg, #fff0f0 0%, #ffd6d1 100%);
   color: #9a2a22;
+}
+
+.status-filter-cancel_requested {
+  border-color: #d89a5b;
+  color: #9a581a;
+}
+
+.status-filter-cancel_requested.is-active {
+  border-color: #c87932;
+  background: linear-gradient(135deg, #fff5e9 0%, #ffdcb8 100%);
+  color: #7b4011;
 }
 
 .status-filter-completed {
@@ -2267,6 +2288,66 @@ textarea:focus {
   grid-template-columns: 1.4fr 0.8fr;
 }
 
+.customer-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.payment-drawer-card {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border-radius: 24px;
+  border: 1px solid rgba(222, 99, 29, 0.18);
+  background: linear-gradient(180deg, rgba(255, 250, 244, 0.96), rgba(255, 255, 255, 0.9));
+  box-shadow: 0 18px 44px rgba(145, 103, 47, 0.1);
+}
+
+.payment-drawer-hero {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.payment-drawer-hero h3 {
+  margin: 2px 0 0;
+  font-size: clamp(1.6rem, 3vw, 2.2rem);
+  line-height: 1;
+}
+
+.payment-method-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.payment-method-tile {
+  min-height: 64px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(232, 196, 170, 0.9);
+  background: rgba(255, 253, 249, 0.96);
+  color: #776a5d;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  text-align: left;
+  font-weight: 900;
+}
+
+.payment-method-tile.is-active {
+  border-color: rgba(222, 99, 29, 0.55);
+  background: #fff0e2;
+  color: var(--brand-strong);
+}
+
+.payment-method-tile strong {
+  min-width: 24px;
+  color: var(--brand);
+  text-align: right;
+}
+
 .payment-select {
   font-weight: 700;
 }
@@ -2701,6 +2782,17 @@ textarea:focus {
   font-weight: 700;
   white-space: nowrap;
   min-height: 74px;
+}
+
+.cash-chip-recommended {
+  min-width: 170px;
+  color: #fff;
+  background: linear-gradient(135deg, #f05a16 0%, #ff8a3d 100%);
+  box-shadow: 0 16px 34px rgba(224, 99, 29, 0.2);
+}
+
+.cash-chip.is-exact {
+  border: 1px solid rgba(222, 99, 29, 0.42);
 }
 
 .button-row-main > * {
