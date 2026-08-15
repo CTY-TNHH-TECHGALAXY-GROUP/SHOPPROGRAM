@@ -4,6 +4,7 @@ import {
   ensureComponentsInventoryColumns,
   ensureProductionTables,
   ensureSalesStorageCompatibility,
+  ensureSaleCancellationStorageCompatibility,
 } from "../_lib.js";
 
 // GET /api/sync/pull?since=<ts>
@@ -16,6 +17,7 @@ export const onRequestGet = async ({ env, request, data }) => {
     await ensureProductionTables(env.DB);
     await ensureSalesStorageCompatibility(env.DB);
   }
+  await ensureSaleCancellationStorageCompatibility(env.DB);
   const url = new URL(request.url);
   const since = Number(url.searchParams.get("since")) || 0;
   const isKioskUser = data && data.user && data.user.role === "kiosk";

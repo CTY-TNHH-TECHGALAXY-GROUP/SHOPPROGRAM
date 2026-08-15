@@ -4,6 +4,7 @@ import {
   inventoryDeltaStmt, movementStmt, componentMovementStmt,
   ensureProductsInventoryModeColumn, ensureComponentsInventoryColumns,
   ensureSalesStorageCompatibility,
+  ensureSaleCancellationStorageCompatibility,
   normalizePaymentMethod, normalizeStockQty,
 } from "../_lib.js";
 
@@ -180,6 +181,7 @@ export const onRequestPost = async ({ env, request, data }) => {
     await ensureComponentsInventoryColumns(env.DB);
     await ensureSalesStorageCompatibility(env.DB);
   }
+  await ensureSaleCancellationStorageCompatibility(env.DB);
   const body = await readJson(request);
   const appliedPromotions = normalizeAppliedPromotions(body && (body.promotions || body.appliedPromotions || body.promotions_json));
   const promotionsStorageReady = await hasPromotionsStorage(env.DB);

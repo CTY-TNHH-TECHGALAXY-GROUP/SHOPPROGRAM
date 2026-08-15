@@ -360,6 +360,59 @@ export async function ensureSalesStorageCompatibility(db) {
   ).run();
 }
 
+let saleCancellationStorageCompatibilityReady = false;
+
+export async function ensureSaleCancellationStorageCompatibility(db) {
+  if (!db) return;
+  if (saleCancellationStorageCompatibilityReady) return;
+  if (!(await columnExists(db, "sales", "stock_status"))) {
+    await db.prepare(
+      db && db.__provider === "supabase"
+        ? `ALTER TABLE sales ADD COLUMN stock_status text NOT NULL DEFAULT 'pending'`
+        : `ALTER TABLE sales ADD COLUMN stock_status TEXT NOT NULL DEFAULT 'pending'`
+    ).run();
+  }
+  await db.prepare(
+    `UPDATE sales
+     SET stock_status = CASE
+       WHEN order_status = 'cancelled' THEN 'restored'
+       WHEN order_status = 'completed' THEN 'applied'
+       ELSE stock_status
+     END
+     WHERE stock_status = 'pending'`
+  ).run();
+  await db.prepare(
+    db && db.__provider === "supabase"
+      ? `CREATE TABLE IF NOT EXISTS sale_cancel_requests (
+          id text primary key,
+          sale_id text not null references sales(id) on delete cascade,
+          order_id text,
+          reason text not null,
+          status text not null default 'pending',
+          requested_by text,
+          reviewed_by text,
+          requested_at bigint not null,
+          reviewed_at bigint,
+          metadata_json text
+        )`
+      : `CREATE TABLE IF NOT EXISTS sale_cancel_requests (
+          id TEXT PRIMARY KEY,
+          sale_id TEXT NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+          order_id TEXT,
+          reason TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          requested_by TEXT,
+          reviewed_by TEXT,
+          requested_at INTEGER NOT NULL,
+          reviewed_at INTEGER,
+          metadata_json TEXT
+        )`
+  ).run();
+  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_sale_cancel_requests_sale ON sale_cancel_requests(sale_id)`).run();
+  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_sale_cancel_requests_status ON sale_cancel_requests(status, requested_at)`).run();
+  saleCancellationStorageCompatibilityReady = true;
+}
+
 export async function ensureStockIssueItemColumns(db) {
   if (!(await columnExists(db, "stock_issue_items", "item_type"))) {
     await db.prepare(

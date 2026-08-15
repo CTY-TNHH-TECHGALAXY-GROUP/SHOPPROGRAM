@@ -1,6 +1,7 @@
 import {
   json, readJson, badRequest, now, uid, runIdempotentBatch, recordOpStmt,
   inventoryDeltaStmt, movementStmt, componentMovementStmt,
+  ensureSaleCancellationStorageCompatibility,
 } from "../../_lib.js";
 
 function normalizeStatus(value) {
@@ -55,6 +56,7 @@ function expandStockReturns(items) {
 }
 
 export const onRequestGet = async ({ env, request, data }) => {
+  await ensureSaleCancellationStorageCompatibility(env.DB);
   if (!data || !data.user || data.user.role !== "admin") {
     return json({ ok: false, error: "admin required" }, { status: 403 });
   }
@@ -73,6 +75,7 @@ export const onRequestGet = async ({ env, request, data }) => {
 };
 
 export const onRequestPost = async ({ env, request, data }) => {
+  await ensureSaleCancellationStorageCompatibility(env.DB);
   const user = data && data.user;
   if (!user || !["admin", "cashier"].includes(user.role)) {
     return json({ ok: false, error: "not allowed" }, { status: 403 });
@@ -135,6 +138,7 @@ export const onRequestPost = async ({ env, request, data }) => {
 };
 
 export const onRequestPatch = async ({ env, request, data }) => {
+  await ensureSaleCancellationStorageCompatibility(env.DB);
   const user = data && data.user;
   if (!user || user.role !== "admin") {
     return json({ ok: false, error: "admin required" }, { status: 403 });
