@@ -1650,6 +1650,12 @@
   function normalizeOrder(order) {
     var baseOrder = order || {};
     var orderId = baseOrder.id || buildOrderId(getOrderDateKey(baseOrder.createdAt || Date.now()), 1);
+    var rawStatus = baseOrder.status || "open";
+    var isInterruptedSaving = rawStatus === "saving";
+    var normalizedStatus = isInterruptedSaving ? "needs_action" : rawStatus;
+    var defaultSyncError = isInterruptedSaving
+      ? "Lưu đơn bị gián đoạn. Vui lòng bấm Thử lại thanh toán. / Saving was interrupted. Please retry payment."
+      : "";
     return {
       id: orderId,
       items: Array.isArray(baseOrder.items)
@@ -1659,9 +1665,9 @@
         : [],
       takeAway: !!baseOrder.takeAway,
       discountAmount: Number(baseOrder.discountAmount) || 0,
-      status: baseOrder.status || "open",
-      syncError: baseOrder.syncError || baseOrder.sync_error || "",
-      syncRetryCount: Number(baseOrder.syncRetryCount || baseOrder.sync_retry_count) || 0,
+      status: normalizedStatus,
+      syncError: baseOrder.syncError || baseOrder.sync_error || defaultSyncError,
+      syncRetryCount: Number(baseOrder.syncRetryCount || baseOrder.sync_retry_count) || (isInterruptedSaving ? 1 : 0),
       createdAt: baseOrder.createdAt || Date.now(),
       customerName: baseOrder.customerName || "Khách lẻ / Walk-in",
       paymentMethod: normalizeCheckoutPaymentMethod(baseOrder.paymentMethod),
@@ -6913,7 +6919,7 @@
         if (qty <= 0) return;
         
         var product = products.find(function(p) { return p.id === item.productId; });
-        if (product && product.isMixedDrink) {
+        if (product && product.inventoryMode === "recipe") {
           var recipeEntries = getRecipeEntries(product);
           if (recipeEntries.length > 0) {
             recipeEntries.forEach(function(entry) {
@@ -6938,7 +6944,10 @@
         var product = products.find(function (currentProduct) {
           return currentProduct.id === item.productId;
         });
-        return !!(product && product.isMixedDrink);
+        // `inventoryMode` is the source of truth from the product record.
+        // Never infer preparation from a stale client-side `isMixedDrink`
+        // value, otherwise a direct-stock item can be sent to Barista.
+        return !!(product && product.inventoryMode === "recipe");
       });
     }
 
@@ -6948,7 +6957,9 @@
 
     function getOrderWorkflowStatus(order) {
       var status = order && order.status ? order.status : "open";
-      if (status === "saving") return "preparing";
+      if (status === "saving") {
+        return orderHasRecipeItems(order) ? "preparing" : "new";
+      }
       if (status === "needs_action") return "needs_action";
       if (status === "held") return "held";
       if (status === "preparing") return "preparing";
@@ -6963,7 +6974,7 @@
         window.alert(L("Chọn đơn có món trước khi thanh toán. / Pick an order with items before payment."));
         return;
       }
-      if (activeOrder.status === "needs_action" || activeOrder.status === "saving") return;
+      if (activeOrder.status === "saving") return;
 
       setCheckoutPanelOpen(true);
       pushToast("info", L("Vui lòng hoàn tất thanh toán trước khi chuyển trạng thái đơn. / Complete payment before moving the order forward."));
@@ -7186,15 +7197,38 @@
       };
     }
 
-    function saveSaleWithOneRetry(payload) {
-      return syncApi("/sales", {
-        method: "POST",
-        body: payload
-      }).catch(function (firstError) {
-        return syncApi("/sales", {
+    function saveSaleAttempt(payload) {
+      // A network request can otherwise remain pending forever and leave the
+      // order visually stuck at "saving". The client operation ID makes the
+      // retry idempotent if the first request eventually reaches the server.
+      return new Promise(function (resolve, reject) {
+        var settled = false;
+        var timeoutId = window.setTimeout(function () {
+          if (settled) return;
+          settled = true;
+          reject(new Error(L("Lưu đơn quá thời gian chờ. / Saving the sale timed out.")));
+        }, 20000);
+
+        syncApi("/sales", {
           method: "POST",
           body: payload
-        }).catch(function (secondError) {
+        }).then(function (response) {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(timeoutId);
+          resolve(response);
+        }).catch(function (error) {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(timeoutId);
+          reject(error);
+        });
+      });
+    }
+
+    function saveSaleWithOneRetry(payload) {
+      return saveSaleAttempt(payload).catch(function (firstError) {
+        return saveSaleAttempt(payload).catch(function (secondError) {
           secondError.firstError = firstError;
           throw secondError;
         });
@@ -7331,6 +7365,8 @@
           throw new Error(L("Server chưa trả mã hóa đơn. / Server did not return a sale ID."));
         }
 
+        var savedOrderStatus = response.orderStatus || targetStatus;
+        var isCompletedOnServer = savedOrderStatus === "completed";
         var saleRecord = {
           id: serverId,
           orderId: response.orderId || canonicalOrderIdFromSaleId(serverId) || orderSnapshot.id,
@@ -7349,8 +7385,8 @@
           cashReceived: Number(orderSnapshot.cashReceived) || 0,
           cashierName: settings.cashierName || "",
           paymentStatus: "paid",
-          orderStatus: targetStatus,
-          stockStatus: shouldReserveStockNow || stockAlreadyReserved ? "applied" : "",
+          orderStatus: savedOrderStatus,
+          stockStatus: response.stockStatus || (shouldReserveStockNow || stockAlreadyReserved ? "applied" : ""),
           note: ""
         };
 
@@ -7405,6 +7441,11 @@
             }, 200);
           }
 
+        }
+
+        // Direct-stock orders complete as soon as payment is confirmed. A
+        // recipe order remains in the queue after its ingredients are reserved.
+        if (isCompletedOnServer) {
           setOrders(function (currentOrders) {
             var remaining = currentOrders.filter(function (order) {
               return order.id !== orderSnapshot.id;
@@ -7433,7 +7474,7 @@
               ? Object.assign({}, order, {
                   reservedSaleId: serverId,
                   orderNumberSource: "server",
-                  status: targetStatus,
+                  status: savedOrderStatus,
                   stockReserved: true,
                   paymentMethod: normalizeCheckoutPaymentMethod(orderSnapshot.paymentMethod),
                   cashReceived: Number(orderSnapshot.cashReceived) || 0,
@@ -7454,7 +7495,7 @@
         });
         setCheckoutPanelOpen(false);
         setPaymentMenuOpen(false);
-        pushToast("success", targetStatus === "preparing"
+        pushToast("success", savedOrderStatus === "preparing"
           ? L("Đã thanh toán, chuyển đơn sang pha chế. / Paid and sent to preparation.")
           : L("Đã thanh toán, đơn đã sẵn sàng. / Paid and order is ready."));
       }).catch(function (error) {
@@ -7482,6 +7523,7 @@
             }).join("\n");
         }
         markOrderNeedsAction(orderSnapshot.id, message);
+        setCheckoutPanelOpen(true);
         pushToast("error", L("Đơn chưa được lưu. Cần xử lí trước khi hoàn tất. / Sale was not saved. Needs action before checkout."));
       }).finally(function () {
         setCheckoutSaving(false);
@@ -12082,7 +12124,7 @@
                       <button className="ghost-btn" disabled>${L("Chờ admin duyệt hủy / Waiting for admin review")}</button>
                     ` : activeOrder.status === "preparing" ? html`
                       <button className="primary-btn" onClick=${finishPreparingOrder}>${L("Hoàn tất chuẩn bị / Mark Ready")}</button>
-                    ` : (activeOrder.status !== "needs_action" && activeOrder.status !== "saving" && activeOrder.status !== "completed" ? html`
+                    ` : (activeOrder.status !== "saving" && activeOrder.status !== "completed" ? html`
                       <button className="primary-btn" disabled=${checkoutDisabled} onClick=${handleCheckoutPrimaryAction}>
                         ${getCheckoutPrimaryLabel()}
                       </button>

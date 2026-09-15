@@ -180,8 +180,8 @@ export const onRequestPost = async ({ env, request, data }) => {
     await ensureProductsInventoryModeColumn(env.DB);
     await ensureComponentsInventoryColumns(env.DB);
     await ensureSalesStorageCompatibility(env.DB);
+    await ensureSaleCancellationStorageCompatibility(env.DB);
   }
-  await ensureSaleCancellationStorageCompatibility(env.DB);
   const body = await readJson(request);
   const appliedPromotions = normalizeAppliedPromotions(body && (body.promotions || body.appliedPromotions || body.promotions_json));
   const promotionsStorageReady = await hasPromotionsStorage(env.DB);
@@ -239,9 +239,9 @@ export const onRequestPost = async ({ env, request, data }) => {
 
   const requestedOrderStatus = String(body && (body.orderStatus || body.order_status) || "completed").toLowerCase();
   const allowedOrderStatuses = new Set(["completed", "cancelled", "held", "new", "preparing", "ready", "needs_action"]);
-  const orderStatus = allowedOrderStatuses.has(requestedOrderStatus) ? requestedOrderStatus : "completed";
-  const isCompleted = orderStatus === "completed";
-  const isCancelled = orderStatus === "cancelled";
+  let orderStatus = allowedOrderStatuses.has(requestedOrderStatus) ? requestedOrderStatus : "completed";
+  let isCompleted = orderStatus === "completed";
+  let isCancelled = orderStatus === "cancelled";
 
   if (data && data.user && data.user.role === "kiosk" && orderStatus !== "new") {
     return json({
@@ -381,7 +381,7 @@ export const onRequestPost = async ({ env, request, data }) => {
     saleId = existingOrder.id;
     canonicalOrderId = existingOrder.order_id || orderIdFromSaleId(saleId) || canonicalOrderId;
   }
-  const shouldApplyStock = ["completed", "preparing", "ready"].includes(orderStatus) && existingStockStatus !== "applied";
+  let shouldApplyStock = false;
 
   // -------- B1: Server-side stock guard & BOM Expansion --------
   // Expand explicitly-marked recipe products into their components.
@@ -428,6 +428,7 @@ export const onRequestPost = async ({ env, request, data }) => {
   const qtyByProduct = new Map();
   const qtyByComponent = new Map();
 
+  let hasRecipeItems = false;
   for (const it of body.items) {
     if (!it.productId) continue;
     const qty = Number(it.qty) || 0;
@@ -437,13 +438,12 @@ export const onRequestPost = async ({ env, request, data }) => {
     let isMixedDrink = false;
     if (info && info.inventory_mode === "recipe") {
       isMixedDrink = true;
-    } else if (info && info.inventory_mode === "stock") {
+    } else {
       isMixedDrink = false;
-    } else if (info) {
-      return badRequest(`inventory mode required for product: ${it.productId}`);
     }
 
     if (isMixedDrink) {
+      hasRecipeItems = true;
       let components = [];
       try {
         components = JSON.parse(info.component_ids || "[]");
@@ -462,6 +462,21 @@ export const onRequestPost = async ({ env, request, data }) => {
       qtyByProduct.set(it.productId, (qtyByProduct.get(it.productId) || 0) + qty);
     }
   }
+
+  // The server is authoritative for this transition. A direct-stock sale
+  // must never appear in the preparation queue, even when a stale POS tab
+  // posts the old `preparing` status.
+  if (!hasRecipeItems && (orderStatus === "preparing" || orderStatus === "ready")) {
+    if (data && data.user && data.user.role === "barista") {
+      return badRequest("direct-stock orders do not require preparation", {
+        code: "DIRECT_STOCK_ORDER_COMPLETES_ON_PAYMENT",
+      });
+    }
+    orderStatus = "completed";
+    isCompleted = true;
+    isCancelled = false;
+  }
+  shouldApplyStock = ["completed", "preparing", "ready"].includes(orderStatus) && existingStockStatus !== "applied";
 
   if (shouldApplyStock && !body.allowNegativeStock) {
     const productStockMap = new Map();
@@ -862,13 +877,16 @@ export const onRequestPost = async ({ env, request, data }) => {
   const outcome = await runIdempotentBatch(env.DB, stmts, body.clientOpId);
   if (outcome.duplicate) {
     const existing = outcome.refId
-      ? await env.DB.prepare("SELECT order_id FROM sales WHERE id = ?").bind(outcome.refId).first()
+      ? await env.DB.prepare("SELECT order_id, order_status, payment_status, stock_status FROM sales WHERE id = ?").bind(outcome.refId).first()
       : null;
     return json({
       ok: true,
       duplicate: true,
       id: outcome.refId,
-      orderId: existing ? existing.order_id : orderIdFromSaleId(outcome.refId)
+      orderId: existing ? existing.order_id : orderIdFromSaleId(outcome.refId),
+      orderStatus: existing ? existing.order_status : "completed",
+      paymentStatus: existing ? existing.payment_status : "paid",
+      stockStatus: existing ? existing.stock_status : "applied",
     });
   }
   return json({
@@ -879,5 +897,8 @@ export const onRequestPost = async ({ env, request, data }) => {
     serverSubtotal,
     serverVat,
     change: changeAmount,
+    orderStatus: orderStatusDb,
+    paymentStatus,
+    stockStatus: nextStockStatus,
   });
 };
