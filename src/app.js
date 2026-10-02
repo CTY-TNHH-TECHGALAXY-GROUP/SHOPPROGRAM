@@ -4500,8 +4500,12 @@
             });
           });
         }
+        var failedOperation = payload && payload.endpoint === "/products/rename"
+          ? L("Đổi ID sản phẩm / Rename product") + " " + failureBody.oldId + " → " + failureBody.newId
+          : (payload && payload.endpoint ? payload.endpoint + (failureBody.id || failureBody.productId ? " " + (failureBody.id || failureBody.productId) : "") : "");
         pushToast("error",
           L("Chưa lưu được — sẽ thử lại / Save failed — will retry") +
+          (failedOperation ? " [" + failedOperation + "]" : "") +
           (payload && payload.error ? " (" + payload.error + ")" : "")
         );
       }

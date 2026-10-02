@@ -109,6 +109,7 @@
     lastError: null,
   };
   var lastFullPullAt = 0;
+  var lastFailureNotice = null;
   function setStatus(patch) {
     Object.assign(state, patch || {});
     emit("status", getStatus());
@@ -182,21 +183,27 @@
       .catch(function (err) {
         // Network / server error — leave in outbox, back off later.
         state.flushing = false;
+        var errorMessage = err && err.message ? err.message : String(err);
         var current = readOutbox();
         if (current[0] && current[0].clientOpId === next.clientOpId) {
           current[0].retries = (current[0].retries || 0) + 1;
-          current[0].lastError = err && err.message ? err.message : String(err);
+          current[0].lastError = errorMessage;
           writeOutbox(current);
         }
-        setStatus({ lastError: err && err.message ? err.message : String(err) });
+        setStatus({ lastError: next.endpoint + ": " + errorMessage });
 
-        emit("failure", {
-          endpoint: next.endpoint,
-          opType: next.opType,
-          body: next.body,
-          status: err && err.status,
-          error: err && err.message ? err.message : String(err),
-        });
+        // Keep retrying, but show the same failure at most once per minute.
+        var noticeKey = next.clientOpId + ":" + errorMessage;
+        if (!lastFailureNotice || lastFailureNotice.key !== noticeKey || Date.now() - lastFailureNotice.at > 60000) {
+          lastFailureNotice = { key: noticeKey, at: Date.now() };
+          emit("failure", {
+            endpoint: next.endpoint,
+            opType: next.opType,
+            body: next.body,
+            status: err && err.status,
+            error: errorMessage,
+          });
+        }
 
         // Auth failures need a fresh login, not blind retries. Keep the op in
         // the outbox so the user can log in again and flush without losing it.

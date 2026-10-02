@@ -6,10 +6,9 @@ import {
 // POST /api/products/rename
 // Body: { oldId, newId, clientOpId? }
 //
-// Atomically rename a product's primary key + cascade the rename to every
-// child table that references products.id. We disable the FK check for the
-// transaction so SQLite doesn't reject the PK UPDATE mid-flight (default
-// behavior: FK violation when changing referenced PK).
+// Move a product to a new primary key while keeping every referenced row.
+// Supabase checks these foreign keys immediately, so the new parent must
+// exist before its children can be moved.
 //
 // Tables updated:
 //   products            (id)
@@ -43,23 +42,31 @@ export const onRequestPost = async ({ env, request }) => {
   }
 
   // Verify old exists, new doesn't.
-  const oldRow = await env.DB.prepare("SELECT id FROM products WHERE id = ?").bind(oldId).first();
+  const oldRow = await env.DB.prepare("SELECT id, barcode FROM products WHERE id = ?").bind(oldId).first();
   if (!oldRow) return notFound("Product " + oldId + " not found");
   const collision = await env.DB.prepare("SELECT id FROM products WHERE id = ?").bind(newId).first();
   if (collision) return badRequest("New ID already exists: " + newId, { code: "ID_COLLISION" });
 
   const ts = now();
-  // Defer FK checks until end of transaction, then update parent + all children.
-  // D1 supports PRAGMA defer_foreign_keys per-transaction.
+  // Start the replacement without a barcode because products.barcode is unique.
+  // batch() is transactional on both providers: if any child move fails, the
+  // original product and its inventory remain unchanged.
   const stmts = [
-    env.DB.prepare("PRAGMA defer_foreign_keys = ON"),
-    env.DB.prepare("UPDATE products          SET id = ?, sku_code = COALESCE(?, sku_code), updated_at = ? WHERE id = ?")
-      .bind(newId, newId, ts, oldId),
+    env.DB.prepare(
+      `INSERT INTO products
+         (id, name, category_id, price, cost_price, barcode, image, description,
+          component_ids, min_stock, is_active, updated_at, unit, sku_code, inventory_mode)
+       SELECT ?, name, category_id, price, cost_price, NULL, image, description,
+              component_ids, min_stock, is_active, ?, unit, ?, inventory_mode
+       FROM products WHERE id = ?`
+    ).bind(newId, ts, newId, oldId),
     env.DB.prepare("UPDATE inventory         SET product_id = ? WHERE product_id = ?").bind(newId, oldId),
     env.DB.prepare("UPDATE sale_items        SET product_id = ? WHERE product_id = ?").bind(newId, oldId),
     env.DB.prepare("UPDATE stock_movements   SET product_id = ? WHERE product_id = ?").bind(newId, oldId),
     env.DB.prepare("UPDATE purchase_order_items SET product_id = ? WHERE product_id = ?").bind(newId, oldId),
     env.DB.prepare("UPDATE stock_issue_items SET product_id = ? WHERE product_id = ?").bind(newId, oldId),
+    env.DB.prepare("DELETE FROM products WHERE id = ?").bind(oldId),
+    env.DB.prepare("UPDATE products SET barcode = ? WHERE id = ?").bind(oldRow.barcode, newId),
     recordOpStmt(env.DB, body.clientOpId, "rename", newId),
   ];
 
